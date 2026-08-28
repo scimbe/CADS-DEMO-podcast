@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Download Piper voice
+        run: bash scripts/setup_piper_voice.sh
+
+      - name: Cache whisper.cpp build + model
+        id: whisper-cache
+        uses: actions/cache@v4
+        with:
+          path: vendor/whisper.cpp
+          key: whisper-cpp-b4938-tiny.en-${{ runner.os }}
+
+      - name: Build whisper.cpp + download model
+        # NOTE: no --allow-mock-transcript is ever passed anywhere in this
+        # workflow. If the model download fails, setup_whisper_cpp.sh exits
+        # non-zero and this job fails loudly, on purpose — see
+        # docs/LIMITATIONS.md. CI must never silently fall back to a mock.
+        run: bash scripts/setup_whisper_cpp.sh
+
+      - name: Generate fixtures
+        run: bash scripts/generate_fixtures.sh
+
+      - name: Run pipeline
+        run: |
+          export PYTHONPATH=src
+          export LLM_BASE_URL="${{ secrets.LLM_BASE_URL }}"
+          export LLM_MODEL="${{ secrets.LLM_MODEL }}"
+          export LLM_API_KEY="${{ secrets.LLM_API_KEY }}"
+          python -m podcast_producer.pipeline \
+            --tracks tests/fixtures/raw/track1.wav tests/fixtures/raw/stinger.wav \
+                     tests/fixtures/raw/track2.wav tests/fixtures/raw/stinger.wav \
+                     tests/fixtures/raw/track3.wav \
+            --out-dir out/
+
+      - name: Run tests
+        run: |
+          export PYTHONPATH=src
+          pytest tests/ -v
+
+      - name: Upload pipeline output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-output
+          path: out/
