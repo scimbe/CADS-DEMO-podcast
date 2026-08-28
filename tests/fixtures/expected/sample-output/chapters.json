@@ -1,0 +1,23 @@
+{
+  "chapters": [
+    {
+      "index": 1,
+      "start_ms": 0,
+      "start_time": "00:00:00",
+      "title": "Zero-trust tunnel platform"
+    },
+    {
+      "index": 2,
+      "start_ms": 7880,
+      "start_time": "00:00:07",
+      "title": "Agent Marketplace for developers"
+    },
+    {
+      "index": 3,
+      "start_ms": 15360,
+      "start_time": "00:00:15",
+      "title": "Sort Arena demo visualization"
+    }
+  ],
+  "generated_from_mock_transcript": false
+}

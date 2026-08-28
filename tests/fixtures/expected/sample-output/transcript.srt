@@ -1,0 +1,12 @@
+1
+00:00:00,000 --> 00:00:06,800
+ Our platform uses a zero-trust tunnel, so that no server ever exposes an open port to the internet.
+
+2
+00:00:07,880 --> 00:00:14,240
+ The Agent Marketplace lets developers publish signed manifests that install new tools automatically.
+
+3
+00:00:15,360 --> 00:00:22,120
+ Sort Arena is a small demo that visualizes sorting algorithms racing against each other in real time.
+
