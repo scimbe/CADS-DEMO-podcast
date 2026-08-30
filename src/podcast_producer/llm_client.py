@@ -3,6 +3,11 @@
 Configuration comes only from the environment (see config/pipeline.env.example):
   LLM_BASE_URL, LLM_MODEL, LLM_API_KEY
 
+For convenience when running inside the demo-portfolio wrapper, the
+OpenAI-compatible `LITELLM_BASE_URL`, `LITELLM_API_KEY` and
+`LITELLM_DEFAULT_MODEL` are accepted as a fallback for the corresponding
+`LLM_*` variables. The `LLM_*` names always take precedence.
+
 No key is ever hardcoded or defaulted here.
 """
 
@@ -17,13 +22,31 @@ class LlmConfigError(RuntimeError):
     pass
 
 
-def get_client() -> tuple[OpenAI, str]:
+def _env_base_url() -> str | None:
+    """LLM_BASE_URL, or LITELLM_BASE_URL (with a `/v1` suffix added if absent).
+
+    The litellm proxy is OpenAI-compatible under `/v1`; the wrapper exports
+    the bare host in LITELLM_BASE_URL, so normalise it here.
+    """
     base_url = os.environ.get("LLM_BASE_URL")
-    api_key = os.environ.get("LLM_API_KEY")
-    model = os.environ.get("LLM_MODEL")
+    if base_url:
+        return base_url
+    litellm = os.environ.get("LITELLM_BASE_URL")
+    if not litellm:
+        return None
+    litellm = litellm.rstrip("/")
+    return litellm if litellm.endswith("/v1") else litellm + "/v1"
+
+
+def get_client() -> tuple[OpenAI, str]:
+    base_url = _env_base_url()
+    api_key = os.environ.get("LLM_API_KEY") or os.environ.get("LITELLM_API_KEY")
+    model = os.environ.get("LLM_MODEL") or os.environ.get("LITELLM_DEFAULT_MODEL")
     missing = [
         name for name, val in
-        (("LLM_BASE_URL", base_url), ("LLM_API_KEY", api_key), ("LLM_MODEL", model))
+        (("LLM_BASE_URL (or LITELLM_BASE_URL)", base_url),
+         ("LLM_API_KEY (or LITELLM_API_KEY)", api_key),
+         ("LLM_MODEL (or LITELLM_DEFAULT_MODEL)", model))
         if not val
     ]
     if missing:
