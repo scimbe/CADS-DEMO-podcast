@@ -151,3 +151,49 @@ def test_fallback_script_is_number_faithful(monkeypatch):
     generated = " ".join(t["text"] for t in script.turns)
     ok, missing = wiki_script.number_guard(_src().extract, generated)
     assert ok, f"fallback dropped numbers: {missing}"
+
+
+# --------------------------------------------------------------------------
+# IPA pronunciation sanitizer
+# --------------------------------------------------------------------------
+
+def test_strip_pronunciation_removes_bracketed_ipa():
+    assert wiki_script.strip_pronunciation("Hannover [haˈnoːfɐ] ist eine Stadt.") \
+        == "Hannover ist eine Stadt."
+
+
+def test_strip_pronunciation_removes_ipa_label_span():
+    assert wiki_script.strip_pronunciation("Kiel (IPA: [kiːl]) liegt am Meer.") \
+        == "Kiel liegt am Meer."
+
+
+def test_strip_pronunciation_keeps_real_parentheticals_and_numbers():
+    text = "Kiel (Hansestadt) hat 251.842 Einwohner (2023)."
+    assert wiki_script.strip_pronunciation(text) == text
+
+
+def test_strip_pronunciation_does_not_break_number_guard():
+    source = "Kiel [kiːl] hat 251.842 Einwohner, im 13. Jahrhundert gegründet."
+    generated = "Kiel hat 251.842 Einwohner, im 13. Jahrhundert gegründet."
+    ok, missing = wiki_script.number_guard(
+        wiki_script.strip_pronunciation(source),
+        wiki_script.strip_pronunciation(generated),
+    )
+    assert ok and missing == set()
+
+
+def test_fallback_script_strips_ipa_but_keeps_numbers(monkeypatch):
+    src = wiki_source.WikiSource(
+        query="Hannover", title="Hannover", description="Stadt [ˈʃtat]",
+        extract="Hannover [haˈnoːfɐ] hat 535.061 Einwohner (2022).",
+        url="https://de.wikipedia.org/wiki/Hannover", lang="de",
+        license="CC BY-SA 4.0", fetched_at="2026-01-01T00:00:00+00:00",
+    )
+    script = wiki_script.build_script(src, use_llm=False)
+    joined = " ".join(t["text"] for t in script.turns)
+    # No IPA markers survive anywhere in the script.
+    for marker in ("ˈ", "ː", "haˈnoːfɐ", "ˈʃtat"):
+        assert marker not in joined
+    # Every real number is still present.
+    ok, missing = wiki_script.number_guard(src.extract, joined)
+    assert ok, f"fallback dropped numbers: {missing}"

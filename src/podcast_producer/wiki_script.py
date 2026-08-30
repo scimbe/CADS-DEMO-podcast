@@ -34,6 +34,36 @@ GUEST = "Gast"
 # separators or a trailing ordinal dot (e.g. "251.842", "1900", "13.", "1,5").
 _NUMBER_RE = re.compile(r"\d[\d.,]*")
 
+# Pronunciation (IPA) spans that Wikipedia extracts often carry, e.g.
+# "Hannover [haˈnoːfɐ] …" or "Kiel (IPA: [kiːl]) …". Piper would read these as
+# gibberish, so they are stripped from any text before it becomes speech. A
+# bracketed span is treated as IPA if it contains an IPA-only marker (stress,
+# length or tone letters) or the literal label "IPA" — real parentheticals
+# like "(Hansestadt)" or "(2023)" have no such marker and are left untouched.
+_IPA = re.compile(r"[\[(（][^\[\]()（）]*[ˈˌːˑ‿˥˦˧˨˩][^\[\]()（）]*[\])）]")
+_IPA_LABEL = re.compile(r"[\[(（][^\[\]()（）]*\bIPA\b[^\[\]()（）]*[\])）]", re.I)
+
+
+def strip_pronunciation(t: str) -> str:
+    """Remove IPA pronunciation spans from text; leave facts/numbers untouched.
+
+    Pure text cleanup (no LLM): only bracketed spans that look like phonetic
+    transcription are removed. Real parentheticals and every digit are kept,
+    so applying this to both sides of the number guard cannot break it.
+    """
+    t = _IPA.sub("", t or "")
+    t = _IPA_LABEL.sub("", t)
+    t = re.sub(r"\s{2,}", " ", t)
+    t = re.sub(r"\s+([,.;:!?])", r"\1", t)
+    return t.strip()
+
+
+def _sanitize_turns(turns: list[dict]) -> list[dict]:
+    """Strip IPA from every turn's text in place (returns the same list)."""
+    for turn in turns:
+        turn["text"] = strip_pronunciation(turn["text"])
+    return turns
+
 SYSTEM_PROMPT = """Du bist Autor:in für einen kurzen, seriösen Wissens-Podcast.
 
 Du bekommst einen FAKTENTEXT (einen Auszug aus der deutschen Wikipedia). Das
@@ -123,7 +153,9 @@ def _sentences(text: str) -> list[str]:
 
 def build_fallback_script(src: wiki_source.WikiSource) -> PodcastScript:
     """Deterministic, number-faithful script built only from the extract."""
-    sentences = _sentences(src.extract)
+    # Strip IPA from the source before it is copied into the script, so the
+    # verbatim path never speaks phonetic transcription.
+    sentences = _sentences(strip_pronunciation(src.extract))
     turns: list[dict] = [
         {"speaker": HOST,
          "text": f"Willkommen zu einer kurzen Folge. Unser Thema heute: {src.title}. "
@@ -142,6 +174,8 @@ def build_fallback_script(src: wiki_source.WikiSource) -> PodcastScript:
     turns.append({"speaker": HOST,
                   "text": f"Mehr dazu steht im Wikipedia-Artikel zu {src.title}. "
                           f"Danke fürs Zuhören."})
+    # Final safety net (also catches an IPA span in the description).
+    _sanitize_turns(turns)
     return PodcastScript(
         title=src.title,
         turns=turns,
@@ -209,8 +243,12 @@ def build_script(src: wiki_source.WikiSource, *, use_llm: bool = True) -> Podcas
         print(f"[wiki_script] LLM script generation failed ({exc}); using verbatim fallback")
         return build_fallback_script(src)
 
+    # Strip IPA from the model's turns (in case it echoed a phonetic span),
+    # and compare the number guard on equally-sanitized source vs. output so
+    # the stripping itself can never make the guard falsely fail.
+    _sanitize_turns(turns)
     generated_text = " ".join(t["text"] for t in turns)
-    ok, missing = number_guard(src.extract, generated_text)
+    ok, missing = number_guard(strip_pronunciation(src.extract), generated_text)
     if not ok:
         print(f"[wiki_script] number guard FAILED — source numbers missing from "
               f"LLM output: {sorted(missing)}. Keeping the verbatim fallback instead.")
