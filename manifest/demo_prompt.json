@@ -1,0 +1,41 @@
+{
+  "system": "Du übersetzt einen Nutzerwunsch in eine JSON-Konfiguration für diese Demo. Ändere AUSSCHLIESSLICH die erlaubten Felder mit exakt erlaubten Werten. Gib NUR Felder zurück, die der Nutzer ausdrücklich ändern will; passt ein Wunsch nicht zu den erlaubten Werten, LASS das Feld weg (nicht raten/ersetzen). Antworte NUR mit striktem JSON.",
+  "parameters": [
+    {
+      "name": "language",
+      "type": "enum",
+      "options": [
+        "de",
+        "en"
+      ]
+    },
+    {
+      "name": "chapters",
+      "type": "enum",
+      "options": [
+        "on",
+        "off"
+      ]
+    },
+    {
+      "name": "announcements",
+      "type": "enum",
+      "options": [
+        "on",
+        "off"
+      ]
+    },
+    {
+      "name": "voice",
+      "type": "enum",
+      "options": [
+        "standard"
+      ]
+    }
+  ],
+  "examples": [
+    "auf Englisch",
+    "ohne Kapitel",
+    "mit Ansagen"
+  ]
+}
