@@ -120,6 +120,48 @@ tests of the timestamp-snapping validator). `tests/test_acceptance.py`
 checks the real `out/` produced in step 4 — see
 [`docs/PIPELINE.md`](docs/PIPELINE.md) for exactly what each check proves.
 
+## Wikipedia-topic podcast (grounded to de.wikipedia.org)
+
+Besides producing an episode from raw audio tracks, this repo can generate a
+**short podcast script for a Wikipedia topic**, grounded strictly on the
+German Wikipedia so nothing is invented:
+
+```bash
+set -a; source .env; set +a        # or the wrapper's LITELLM_* vars
+export PYTHONPATH=src
+
+python -m podcast_producer.wiki_podcast "Kiel" --out-dir out-wiki/
+```
+
+What it does, stage by stage:
+
+1. **Fetch** `GET https://de.wikipedia.org/api/rest_v1/page/summary/<Titel>`
+   (`wiki_source.py`, stdlib only) and use its `extract` as the *only*
+   factual source. If the page is a **disambiguation** page, is missing
+   (404), or has no extract, it **aborts loudly** — it never guesses.
+2. **Script** — form a short Host/Gast dialogue from the extract
+   (`wiki_script.py`). By default an LLM rewrites it into natural speech,
+   but its output is only kept if it passes a **number guard**: every
+   numeric token in the source (years, populations, ordinals, …) must still
+   appear in the script, otherwise the LLM output is discarded and a
+   deterministic, close-to-verbatim fallback script is used. Pass
+   `--no-llm` to force the verbatim fallback.
+3. **Audio** (optional, `--with-audio`) — synthesize speech per turn with
+   Piper and concatenate into `episode.mp3`, exactly like the main
+   producer's audio path. Best-effort: if Piper/voice is unavailable it is
+   skipped with a clear note (the script still stands). For German audio,
+   point `PIPER_MODEL_PATH` at a German voice (see `docs/LIMITATIONS.md`).
+
+Output in `--out-dir`: `wiki_source.json` (the raw, verbatim extract +
+provenance), `script.json` / `script.txt` (the dialogue), `provenance.json`
+(source URL, `CC BY-SA 4.0` license, generation mode, number-guard result),
+`wiki_podcast_summary.json`, and — with `--with-audio` — `episode.mp3` plus
+`turns/turnNN.wav`.
+
+The LLM endpoint is read from `LLM_BASE_URL` / `LLM_MODEL` / `LLM_API_KEY`,
+or the OpenAI-compatible `LITELLM_BASE_URL` / `LITELLM_DEFAULT_MODEL` /
+`LITELLM_API_KEY` as a fallback (the wrapper exports the latter).
+
 ## Repo layout
 
 ```
@@ -130,6 +172,9 @@ src/podcast_producer/
   announce.py           optional: Piper chapter-announcement synthesis
   llm_client.py            thin OpenAI-SDK-compatible client (env-configured)
   pipeline.py                CLI entrypoint, orchestrates all stages
+  wiki_source.py               Wikipedia REST fetch + validation (grounding)
+  wiki_script.py                extract -> Host/Gast script, number-guarded
+  wiki_podcast.py                 CLI entrypoint for the Wikipedia-topic podcast
 scripts/            setup_whisper_cpp.sh, setup_piper_voice.sh, generate_fixtures.sh
 config/pipeline.env.example
 tests/              test_acceptance.py, test_chapters_validator.py, fixtures/

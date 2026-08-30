@@ -105,3 +105,31 @@ deliberately a **local CLI pipeline**, not a `*.bunsenbrenner.org` web
 service. `src/` is kept import-clean (stdlib-only orchestration, no
 framework coupling) so a future web/ct-agent wrapper is straightforward,
 but building one is out of scope here and was not attempted.
+
+## 3. Wikipedia-topic podcast: grounding, number guard, and German audio
+
+`podcast_producer.wiki_podcast` generates a short podcast **script** for a
+Wikipedia topic. Its factual scope is deliberately narrow and honest:
+
+- **Only the REST summary `extract` is used** as a fact source — not the full
+  article, not the model's own knowledge. Disambiguation pages, missing
+  pages (404), and pages without an extract are refused (`WikiSourceError`),
+  never guessed around.
+- **Number guard.** When the LLM rewrites the extract into dialogue, the
+  result is accepted only if every numeric token in the source (years,
+  populations, ordinals, …) still appears. If any is missing, the LLM output
+  is discarded and a deterministic, close-to-verbatim fallback script is used
+  instead (`generation: "verbatim-fallback"` in `provenance.json`). This
+  catches silent figure drops but is intentionally conservative: it does not
+  verify *non-numeric* facts, so the LLM path is still a reformulation of the
+  (trusted) extract, not an independently fact-checked text. The fallback
+  path stays word-for-word faithful.
+- **German audio.** Audio synthesis (`--with-audio`) is optional and reuses
+  the Piper path. The voice shipped by `scripts/setup_piper_voice.sh` is
+  **English** (`en_US-amy-low`), so German text is mispronounced — for real
+  German audio, point `PIPER_MODEL_PATH` at a German Piper voice (e.g.
+  `de_DE-thorsten-low`). On this macOS build the `piper-tts` wheel's bundled
+  espeak-ng data is missing, so Piper fails at runtime; `wiki_podcast`
+  handles that gracefully — it reports `audio.produced: false` with the
+  reason and still writes the script. The script + provenance are the
+  primary, always-produced artifacts; audio is a best-effort extra.
