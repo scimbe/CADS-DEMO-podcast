@@ -19,6 +19,7 @@ import argparse
 import json
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from . import announce, cut_mix
@@ -50,9 +51,9 @@ def _synthesize_audio(script: wiki_script.PodcastScript, out_dir: Path) -> dict:
     try:
         with tempfile.TemporaryDirectory(prefix="wiki_podcast_") as tmp:
             tmp_dir = Path(tmp)
-            normalized: list[Path] = []
-            turn_manifest = []
-            for i, turn in enumerate(script.turns, start=1):
+
+            def _synth_turn(item: tuple[int, dict]) -> tuple[Path, dict]:
+                i, turn = item
                 raw_wav = turns_dir / f"turn{i:02d}.wav"
                 announce.synth_announcement(
                     turn["text"], raw_wav, piper_bin=piper_bin, model_path=model_path
@@ -60,13 +61,25 @@ def _synthesize_audio(script: wiki_script.PodcastScript, out_dir: Path) -> dict:
                 norm = tmp_dir / f"norm_{i:03d}.wav"
                 ff.normalize_wav(raw_wav, norm, sample_rate=cut_mix.MASTER_RATE,
                                  channels=cut_mix.MASTER_CHANNELS)
-                normalized.append(norm)
-                turn_manifest.append({
+                return norm, {
                     "index": i,
                     "speaker": turn["speaker"],
                     "wav": str(raw_wav),
                     "duration_s": round(ff.probe_duration_seconds(raw_wav), 3),
-                })
+                }
+
+            # Per-turn synth is independent I/O-bound work; run it on a small
+            # bounded thread pool. Warm the ffmpeg/ffprobe lookups first so the
+            # workers don't race on them, and rely on executor.map preserving
+            # input order so the concat below stays turn-ordered.
+            ff.ffmpeg_bin()
+            ff.ffprobe_bin()
+            items = list(enumerate(script.turns, start=1))
+            workers = min(announce.TTS_MAX_WORKERS, len(items)) or 1
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                synth_results = list(pool.map(_synth_turn, items))
+            normalized = [norm for norm, _ in synth_results]
+            turn_manifest = [entry for _, entry in synth_results]
 
             master = out_dir / "episode_master.wav"
             ff.concat_wavs(normalized, master)

@@ -13,9 +13,15 @@ import os
 import shutil
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from . import ffmpeg_util as ff
+
+# Per-item TTS is I/O-/subprocess-bound (each call shells out to Piper), and
+# each item is independent, so a small bounded thread pool overlaps the waits.
+# Kept modest on purpose; override with PODCAST_TTS_WORKERS if needed.
+TTS_MAX_WORKERS = max(1, int(os.environ.get("PODCAST_TTS_WORKERS", "4")))
 
 
 class AnnounceError(RuntimeError):
@@ -58,18 +64,26 @@ def generate_announcements(
         raise AnnounceError("Piper TTS unavailable:\n  - " + "\n  - ".join(missing))
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    results = []
-    for c in chapters:
+
+    def _synth_one(c: dict) -> dict:
         wav_path = out_dir / f"chapter{c['index']}.wav"
         text = f"Chapter {c['index']}: {c['title']}"
         synth_announcement(text, wav_path, piper_bin=piper_bin, model_path=model_path)
-        results.append({
+        return {
             "index": c["index"],
             "text": text,
             "wav": str(wav_path),
             "duration_s": round(ff.probe_duration_seconds(wav_path), 3),
-        })
-    return results
+        }
+
+    if not chapters:
+        return []
+    # Warm the ffprobe lookup once so concurrent workers don't race on it.
+    ff.ffprobe_bin()
+    workers = min(TTS_MAX_WORKERS, len(chapters))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        # executor.map preserves input order, so results stay chapter-ordered.
+        return list(pool.map(_synth_one, chapters))
 
 
 def _cli() -> None:
