@@ -22,7 +22,7 @@ Scope note: this is a **local CLI pipeline**, not a `*.bunsenbrenner.org`
 web/tunnel service — that wrapper is explicitly out of scope for this pass
 (see `docs/LIMITATIONS.md` §5).
 
-## What's real vs. what's a documented limitation
+## What's real vs. what's a known limitation
 
 Everything in the pipeline is real: real ffmpeg audio processing, a real
 whisper.cpp build transcribing real synthesized speech (word-for-word
@@ -184,3 +184,15 @@ docs/               LIMITATIONS.md, PIPELINE.md
 See [`docs/PIPELINE.md`](docs/PIPELINE.md) for the exact stage-by-stage I/O
 contract and [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) for every known
 gap or deviation from the original plan, stated plainly.
+
+## Part of the bunsenbrenner.org demo portfolio
+
+This demo is published as a signed manifest on the live registry, alongside the rest of the
+[bunsenbrenner.org](https://bunsenbrenner.org) demo portfolio. Verified present on
+[`registry.bunsenbrenner.org/manifests`](https://registry.bunsenbrenner.org/manifests) as
+`podcast` v0.1.1, carrying a manifest `signature` and `publisher_pubkey` (checked at activation
+time). Its guardrail verdict is `binary-kind`: no static compose-YAML scan applies to this
+installer kind, so trust rests on the publisher-pubkey allowlist rather than a bundle scan.
+
+The registry entry is the installable manifest. As noted above, this demo is a **local CLI
+pipeline** by design — there is no `*.bunsenbrenner.org` web endpoint for it.
