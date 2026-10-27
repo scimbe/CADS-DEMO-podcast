@@ -148,7 +148,7 @@ def run(raw_cfg: object, out_dir: Path) -> dict:
     if dur > C.MAX_VIDEO_SECONDS + 1:
         raise EvgenError(f"Video laenger als {C.MAX_VIDEO_SECONDS}s", "duration_limit")
     loud = video.measure(mp4)
-    out_script = {"title": title, "lang": cfg.lang, "voice": "Thomas (Piper de_DE-thorsten-high)", "scenes": scenes, "source": "user-text"}
+    out_script = {"title": title, "lang": cfg.lang, "voice": "Thomas (Piper de_DE-thorsten-high)", "scenes": scenes, "removed_sentences": rep.removed, "source": "user-text"}
     (out_dir / "script.json").write_text(json.dumps(out_script, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     elapsed = round(time.monotonic() - t0, 1)
     meta = {"duration_s": round(dur, 2), "requested_length_s": cfg.length_s, "scenes": len(scenes), "words": rep.words, "claims": rep.claims,

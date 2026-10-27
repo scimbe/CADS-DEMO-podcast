@@ -22,11 +22,24 @@ class ScriptProblems(Exception):
         self.problems = problems
 
 
+_ABBR = ("z. B.", "z.B.", "d. h.", "d.h.", "u. a.", "u.a.", "bzw.", "ca.", "Nr.", "ggf.", "inkl.", "evtl.", "usw.", "etc.", "St.", "Dr.", "Prof.", "vs.")
+
+
+def _sentences(text: str) -> list[str]:
+    """Satzgrenzen nach . ! ? -- aber nicht nach Ordnungszahlen ("15. Februar") und gaengigen Abkuerzungen."""
+    keep = text
+    for ab in _ABBR:
+        keep = keep.replace(ab, ab.replace(".", "\u2024").replace(" ", "\u00a0"))
+    keep = re.sub(r"(\d)\.(\s+)(?=[A-ZÄÖÜa-zäöüß])", lambda m: m.group(1) + "\u2024" + m.group(2), keep)
+    parts = re.split(r"(?<=[.!?])\s+", keep.strip())
+    return [x.replace("\u2024", ".").replace("\u00a0", " ") for x in parts if x.strip()]
+
+
 def split_sentences(text: str, limit: int = 320) -> list[str]:
     """Eingabetext in nummerierbare Saetze zerlegen (Absaetze/Aufzaehlungen zaehlen als Grenze)."""
     out: list[str] = []
     for para in re.split(r"\n+", text):
-        for s in re.split(r"(?<=[.!?])\s+", para.strip()):
+        for s in _sentences(para):
             s = s.strip(" -*\u2022\t")
             while len(s) > limit:
                 cut = max(s.rfind(", ", 0, limit), s.rfind(" ", 0, limit))
@@ -54,15 +67,22 @@ def numbers(s: str) -> set[str]:
     return {m.rstrip(".,") for m in _NUM.findall(s) if m.rstrip(".,")}
 
 
+_DANGLING = {"einen", "eine", "einer", "einem", "der", "die", "das", "den", "dem", "des", "und", "oder", "in", "im", "zu", "zum", "zur",
+             "mit", "für", "von", "an", "auf", "bei", "ab", "bis", "um", "als", "wie", "neuen", "neue", "neuer", "a", "the", "of", "and"}
+
+
 def shorten(s: str, limit: int = 70) -> str:
-    """Satz auf einen Stichpunkt kuerzen: Satzzeichen weg, an Komma/Wortgrenze schneiden."""
+    """Satz auf einen Stichpunkt kuerzen: Satzzeichen weg, an Komma/Wortgrenze schneiden, keine haengenden Artikel."""
     s = s.strip().rstrip(".!?;: ")
     if len(s) <= limit:
         return s
     cut = s.rfind(", ", 0, limit)
     if cut < 20:
         cut = s.rfind(" ", 0, limit)
-    return s[:cut if cut > 0 else limit].rstrip(", ")
+    toks = s[:cut if cut > 0 else limit].rstrip(", ").split(" ")
+    while len(toks) > 2 and toks[-1].lower() in _DANGLING:
+        toks.pop()
+    return " ".join(toks)
 
 
 def repair_bullets(bullets: object, cited: list[str]) -> list[str]:
@@ -79,13 +99,16 @@ def repair_bullets(bullets: object, cited: list[str]) -> list[str]:
         if len(b) >= 3 and b not in out and len(out) < 4:
             out.append(b)
 
-    for sent in cited:                      # 1. ganze (gekürzte) Quellsätze
+    clauses = [x.strip() for sent in cited for x in re.split(r",\s+|\s+(?:und|sowie|and|oder)\s+", sent) if len(x.strip()) >= 10]
+    if len(clauses) >= 2 and len(cited) == 1:
+        for part in clauses:                # ein Quellsatz: dessen Teilsaetze
+            add(part)
+    for sent in cited:                      # sonst/danach: ganze (gekuerzte) Quellsaetze
         if len(out) < 2:
             add(sent)
-    for sent in cited:                      # 2. sonst Teilsaetze
-        for part in re.split(r",\s+|\s+(?:und|sowie|and)\s+", sent):
-            if len(out) < 2 and len(part) >= 15:
-                add(part)
+    for part in clauses:
+        if len(out) < 2:
+            add(part)
     return out[:4] if len(out) >= 2 else []
 
 
@@ -115,6 +138,98 @@ def bounds(length_s: int, text: str) -> tuple[int, int, bool]:
     return lo, hi, limited
 
 
+# ---- Satzweiser Beleg-Filter (deterministisch, kein LLM) -------------------------------------------------
+# Jeder Satz des Erzaehltexts (und jeder Stichpunkt) muss durch die zitierten Quellsaetze gedeckt sein:
+# Inhaltswoerter (>= 4 Buchstaben, keine Funktionswoerter) muessen dort -- auch gebeugt oder als Teil eines
+# Kompositums -- vorkommen. Hoechstens ein Drittel (neue Verben/Adjektive, leichtes Umformulieren); neue Substantive/Namen nie. Wertende Woerter,
+# Ratschlaege und Anrede sind nie erlaubt, wenn die Quelle sie nicht selbst enthaelt.
+_STOP = set("""
+dies diese dieser dieses diesem diesen eine einen einem einer eines sind wird werden wurde wurden worden haben hatte hatten
+kann kann koennen konnte soll sollen muss muessen auch nicht noch schon sehr oder aber wenn dass damit sowie ueber unter
+durch nach bevor waehrend ihre ihrer ihren ihrem ihres seine seiner seinen seinem dabei dazu hier dort dann also weil denn
+jede jeder jedes jeden mehr viel wieder zwischen gegen ohne zudem ausserdem somit daher deshalb dafuer dabei davon
+dessen deren welche welcher welches welchen wobei womit worauf sich sein seit bereits etwa rund bis ab von vom zum zur
+that this with from have been were which their there also about into your will would could should them they what when
+moeglich erfolgen erfolgt erfolgte gibt geben steht stehen gilt gelten bietet bieten findet finden liegt liegen kommt kommen
+""".split())
+_EVAL = tuple("""gut best bess optim ideal perfek hervorr ausgez sicher bequem komfort einfach guenst toll grossart wichtig empfehl
+vorteil zuverl professionell entspannt sorgenfrei bitte rechtzeitig unbedingt strikt problemlos praktisch attraktiv beliebt
+erfolgreich einzigartig moderne spannend gluecklich fantastisch ideal excellent great perfect best easy convenient""".split())
+NOVEL_SHARE_MAX = 0.34
+
+
+def _words(s: str) -> list[str]:
+    return [w for w in norm(s).split() if len(w) >= 4 and w not in _STOP]
+
+
+def _variants(w: str) -> set[str]:
+    v = {w}
+    if len(w) >= 7 and w.startswith("ge"):
+        v.add(w[2:])
+    return v
+
+
+def _covered(w: str, src_words: set[str]) -> bool:
+    """Wort durch Quelle gedeckt: gleiche Wortanfaenge (Flexion), Teil eines Kompositums oder Kompositum aus Quellwort."""
+    for x in _variants(w):
+        for sw in src_words:
+            for y in _variants(sw):
+                if x == y or (len(x) >= 5 and len(y) >= 5 and x[:4] == y[:4]):
+                    return True
+                if len(y) >= 4 and (y in x or (len(x) >= 5 and x in y)):
+                    return True
+    return False
+
+
+def novel_words(sentence: str, sources_text: str, extra_ok: str = "") -> tuple[list[str], list[str]]:
+    """(neue Inhaltswoerter, davon der Grund zur Ablehnung). Leere Listen = Satz ist gedeckt.
+    Abgelehnt wird bei: wertendem/ratgebendem Wort, neuem Substantiv/Namen (gross, nicht Satzanfang) oder zu vielen neuen Woertern."""
+    src = set(_words(sources_text + " " + extra_ok))
+    raw = re.findall(r"[^\W\d_]+", nfc(sentence))
+    novel, nouns = [], []
+    for k, w in enumerate(raw):
+        nw = norm(w)
+        if len(nw) < 4 or nw in _STOP or _covered(nw, src):
+            continue
+        novel.append(nw)
+        if k > 0 and w[:1].isupper():
+            nouns.append(nw)
+    n = len(_words(sentence))
+    evaluative = [w for w in novel if w.startswith(_EVAL)]
+    allowed = max(1, int(NOVEL_SHARE_MAX * n)) if n >= 3 else 0
+    bad = evaluative or nouns or len(novel) > allowed
+    return (novel, evaluative or nouns or novel) if bad else ([], [])
+
+
+def sentence_ok(sentence: str, sources_text: str, extra_ok: str = "") -> bool:
+    novel, _ = novel_words(sentence, sources_text, extra_ok)
+    return not novel and not (numbers(sentence) - numbers(sources_text) - numbers(extra_ok))
+
+
+def ground_narration(nar: str, cited: list[str], title: str) -> tuple[str, list[dict], list[str]]:
+    """Behaelt nur gedeckte Saetze. Bleibt zu wenig uebrig, wird die Quelle selbst (woertlich) gesprochen.
+    Rueckgabe: (Erzaehltext, [{text, source}], entfernte Saetze)."""
+    src = " ".join(cited)
+    kept, removed = [], []
+    for sent in _sentences(nar):
+        (kept if sentence_ok(sent, src, title) else removed).append(sent)
+    text = " ".join(kept)
+    if word_count(text) < 6:
+        text, kept = "", []
+        for c in cited:
+            if word_count(" ".join([text, c])) <= 60:
+                text = (text + " " + c).strip()
+                kept.append(c)
+        if word_count(text) < 6:       # extrem kurzer Quellsatz: trotzdem nur Quelle
+            text, kept = " ".join(cited)[:400], list(cited)
+    mapping = []
+    for sent in kept:
+        ws = set(_words(sent))
+        best = max(range(len(cited)), key=lambda k: len(ws & set(_words(cited[k]))))
+        mapping.append({"text": sent, "source": best})
+    return text, mapping, removed
+
+
 @dataclass
 class Report:
     words: int = 0
@@ -124,6 +239,7 @@ class Report:
     min_words: int = 0
     max_words: int = 0
     warnings: list[str] = field(default_factory=list)
+    removed: list = field(default_factory=list)
 
 
 def validate(script: object, cfg: Config) -> tuple[dict, Report]:
@@ -140,6 +256,7 @@ def validate(script: object, cfg: Config) -> tuple[dict, Report]:
     sents = split_sentences(cfg.text)
     total = 0
     out = []
+    removed_all: list[dict] = []
     for i, sc in enumerate(scenes):
         tag = f"Szene {i + 1}"
         if not isinstance(sc, dict):
@@ -158,22 +275,25 @@ def validate(script: object, cfg: Config) -> tuple[dict, Report]:
                 p.append(f"{tag}: bullets braucht 2..4 Punkte mit je 3..70 Zeichen"); continue
             bl = fixed
             rep.warnings.append(f"Szene {i + 1}: Stichpunkte fehlten oder waren ungültig und wurden aus den Quellsätzen abgeleitet")
-        total += word_count(nar)
         cited_text = " ".join(cited)
-        extra = numbers(" ".join([nar, head, *bl])) - numbers(cited_text) - numbers(cfg.title)
-        if extra:
-            p.append(f"{tag}: Zahlen nicht in den genannten Quellsätzen: {', '.join(sorted(extra))}")
-        cited_stems = stems(cited_text) | stems(cfg.title) | stems(head)
-        long_w = [w for w in norm(" ".join([nar, *bl])).split() if len(w) >= 7]
-        if long_w:
-            ratio = sum(1 for w in long_w if w[:5] not in cited_stems) / len(long_w)
-            rep.max_novel_ratio = max(rep.max_novel_ratio, round(ratio, 2))
-            if ratio > NOVEL_WORD_MAX:
-                p.append(f"{tag}: {int(ratio * 100)}% der Inhaltswörter stehen nicht in den Quellsätzen {list(dict.fromkeys(src))} (erfunden?)")
+        nar, mapping, gone = ground_narration(nar, cited, cfg.title)
+        if gone:
+            removed_all += [{"scene": i + 1, "sentence": x} for x in gone]
+        if not sentence_ok(head, cited_text, cfg.title):
+            head = next((b for b in bl if isinstance(b, str) and 3 <= len(b.strip()) <= 60 and sentence_ok(b, cited_text, cfg.title)), None) or shorten(cited[0], 60)
+            rep.warnings.append(f"Szene {i + 1}: Überschrift war nicht im Text belegt und wurde aus dem Quellsatz abgeleitet")
+        good_b = [b for b in bl if sentence_ok(b, cited_text, cfg.title)]
+        if len(good_b) != len(bl):
+            fixed = repair_bullets(good_b, cited)
+            if not fixed:
+                p.append(f"{tag}: bullets nicht belegbar"); continue
+            bl = fixed
+        total += word_count(nar)
         rep.claims += len(cited)
         cl = cited
         out.append({"narration": nfc(re.sub(r"\s+", " ", nar).strip()), "headline": nfc(head.strip()),
-                    "bullets": [nfc(b.strip()) for b in bl], "claims": cl, "sources": list(dict.fromkeys(src))})
+                    "bullets": [nfc(b.strip()) for b in bl], "claims": cl, "sources": list(dict.fromkeys(src)),
+                    "narration_sources": mapping})
     lo, hi, limited = bounds(cfg.length_s, cfg.text)
     rep.words, rep.scenes, rep.min_words, rep.max_words = total, len(scenes), lo, hi
     if total < lo:
@@ -182,6 +302,9 @@ def validate(script: object, cfg: Config) -> tuple[dict, Report]:
         p.append(f"Erzähltext zu lang: {total} Wörter, höchstens {hi}")
     if p:
         raise ScriptProblems(p)
+    rep.removed = removed_all
+    if removed_all:
+        rep.warnings.append(f"{len(removed_all)} Satz/Sätze entfernt, die nicht im Text belegt waren (keine Erfindungen)")
     if limited:
         rep.warnings.append("Video kürzer als gewaehlt: der Text gibt für mehr Inhalt nicht genug her (keine Erfindungen)")
     return {"title": nfc(title.strip()), "scenes": out}, rep

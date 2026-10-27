@@ -51,18 +51,20 @@ def test_missing_or_bad_sources_rejected():
         G.validate(s, CFG)
 
 
-def test_invented_number_rejected():
-    s = good(); s["scenes"][0]["narration"] = "Der Regenbogen ist 73 Grad gross und entsteht durch Sonnenlicht auf Regentropfen im Himmel."
-    with pytest.raises(G.ScriptProblems, match="Zahlen"):
-        G.validate(s, CFG)
+def test_invented_number_sentence_is_dropped():
+    s = good(); s["scenes"][0]["narration"] = "Sonnenlicht trifft auf Regentropfen. Der Regenbogen ist 73 Grad groß und entsteht im Himmel."
+    out, rep = G.validate(s, CFG)
+    assert "73" not in out["scenes"][0]["narration"] and any("73" in r["sentence"] for r in rep.removed)
 
 
-def test_invented_content_rejected():
+def test_invented_content_is_replaced_by_the_source():
     s = good()
-    s["scenes"][0]["narration"] = "Kolumbus entdeckte Amerika waehrend Kartoffelplantagen verwaltet wurden, sagen Historiker uebereinstimmend."
+    s["scenes"][0]["narration"] = "Kolumbus entdeckte Amerika, während Kartoffelplantagen verwaltet wurden, sagen Historiker übereinstimmend."
     s["scenes"][0]["bullets"] = ["Kolumbus entdeckte Amerika", "Kartoffelplantagen weltweit"]
-    with pytest.raises(G.ScriptProblems, match="erfunden"):
-        G.validate(s, CFG)
+    out, _ = G.validate(s, CFG)
+    sc = out["scenes"][0]
+    assert "Kolumbus" not in sc["narration"] and not any("Kolumbus" in b or "Kartoffel" in b for b in sc["bullets"])
+    assert len(sc["bullets"]) >= 2 and "Regenbogen" in sc["narration"] or "Sonnenlicht" in sc["narration"]
 
 
 def test_too_long_narration_rejected():
