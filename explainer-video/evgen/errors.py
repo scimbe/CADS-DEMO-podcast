@@ -7,10 +7,11 @@ class EvgenError(Exception):
     code = "internal"
     exit_code = 1
 
-    def __init__(self, message: str, code: str | None = None):
+    def __init__(self, message: str, code: str | None = None, detail: str = ""):
         super().__init__(message)
         if code:
             self.code = code
+        self.detail = detail        # technische Einzelheiten: nie in "message", nur fuer "Technische Details"
 
 
 class ConfigError(EvgenError):

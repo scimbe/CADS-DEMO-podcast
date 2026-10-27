@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import shutil
 import tempfile
 import threading
@@ -38,33 +39,95 @@ def drop_to_limit(lengths: list[float], limit: float = C.MAX_VIDEO_SECONDS, keep
     return n
 
 
-# Der TTS-Node serialisiert die Inferenz und haelt nur 5 Anfragen in der Schlange (503 darueber): wenige parallel, mit Wiederholung.
-TTS_SLOTS = threading.Semaphore(int(os.environ.get("EVGEN_TTS_CONCURRENCY", "2")))
+# Der TTS-Node (geteilt mit der Callcenter-Demo) serialisiert die Inferenz und antwortet bei Auslastung mit 503:
+# hoechstens EVGEN_TTS_CONCURRENCY (2) Aufrufe dieses Laufs gleichzeitig; bei Auslastung/Timeout Backoff mit Jitter
+# (0,5 / 1 / 2 / 4 s ...) innerhalb eines Zeitbudgets je Szene; scheitert eine Szene, bekommt sie am Ende einen zweiten Anlauf.
+_CHANNEL = os.environ.get("EVGEN_TTS_BACKEND", "channel") == "channel"
+# Channel (geteilt mit dem Callcenter): 1 Aufruf zugleich + Pause (im Live-Test haelt das den Callcenter bei 9/10 in 5 s); sonst 2.
+TTS_SLOTS = threading.Semaphore(int(os.environ.get("EVGEN_TTS_CONCURRENCY", "1" if _CHANNEL else "2")))
+SCENE_BUDGET_S = float(os.environ.get("EVGEN_TTS_SCENE_BUDGET", "30"))
+BACKOFF_SCALE = float(os.environ.get("EVGEN_TTS_BACKOFF_SCALE", "1"))   # nur fuer Tests < 1
+BACKOFF_S = (0.5, 1.0, 2.0, 4.0)
+NO_RETRY = ("tts_not_configured", "tts_lang_unavailable")
+# Ruecksicht auf die geteilte Stimme: nach jedem fertigen Clip kurz pausieren, damit interaktive Nutzer (Callcenter)
+# in die Piper-Warteschlange kommen. 0 = aus.
+TTS_PACE_S = float(os.environ.get("EVGEN_TTS_PACE", "1.0" if _CHANNEL else "0"))
+_pace_lock = threading.Lock()
+_pace_last_end = [0.0]
 
 
-def synth_retry(backend, chunk: str) -> bytes:
-    for attempt in range(3):
+def _call_paced(backend, chunk: str) -> bytes:
+    if TTS_PACE_S > 0:
+        with _pace_lock:                      # ein Aufruf nach dem anderen bei der Pause, Anzahl Slots bleibt Obergrenze
+            wait = _pace_last_end[0] + TTS_PACE_S - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
+    try:
+        return backend.synth(chunk, "A", TTS_CHUNK_TIMEOUT)
+    finally:
+        _pace_last_end[0] = time.monotonic()
+
+
+def backoff_delay(attempt: int) -> float:
+    base = BACKOFF_S[min(attempt, len(BACKOFF_S) - 1)]
+    return base * random.uniform(0.75, 1.25) * BACKOFF_SCALE
+
+
+def synth_retry(backend, chunk: str, budget_end: float) -> bytes:
+    attempt = 0
+    while True:
         try:
             with TTS_SLOTS:
-                return backend.synth(chunk, "A", TTS_CHUNK_TIMEOUT)
+                return _call_paced(backend, chunk)
         except TtsError as e:
-            if attempt == 2 or e.code in ("timeout", "tts_not_configured", "tts_lang_unavailable"):
+            delay = backoff_delay(attempt)
+            if e.code in NO_RETRY or time.monotonic() + delay > budget_end:
                 raise
-            time.sleep(1.5 * (attempt + 1))
-    raise TtsError("unerreichbar")
+            attempt += 1
+            time.sleep(delay)
 
 
-def synth_scene(backend, text: str, wd: Path, i: int) -> tuple[Path, float]:
+def synth_scene(backend, text: str, wd: Path, i: int, budget_s: float | None = None) -> tuple[Path, float]:
+    budget_end = time.monotonic() + (SCENE_BUDGET_S if budget_s is None else budget_s)
     parts = []
     for k, chunk in enumerate(tts.split_text(text)):
         raw = wd / f"n{i}_{k}.wav"
-        raw.write_bytes(synth_retry(backend, chunk))
+        raw.write_bytes(synth_retry(backend, chunk, budget_end))
         parts.append(raw)
     if len(parts) == 1:
         return parts[0], video.duration(parts[0])
     joined = wd / f"n{i}.wav"
     video.concat(parts, joined, wd, audio=True)
     return joined, video.duration(joined)
+
+
+def run_scene_jobs(n: int, job, workers: int, deadline: float, on_done=None) -> dict:
+    """Szenen parallel; eine an TTS gescheiterte Szene wird am Ende noch einmal versucht, danach freundlicher Fehler."""
+    results: dict[int, dict] = {}
+    failed: list[tuple[int, TtsError]] = []
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futs = {pool.submit(job, i): i for i in range(n)}
+        for f in as_completed(futs):
+            if time.monotonic() > deadline:
+                pool.shutdown(wait=False, cancel_futures=True)
+                raise TimeoutError_("Das Zeitlimit für dieses Video ist erreicht – bitte noch einmal versuchen.")
+            try:
+                results[futs[f]] = f.result()
+            except TtsError as e:
+                if e.code in NO_RETRY:
+                    raise
+                failed.append((futs[f], e))
+                continue
+            if on_done:
+                on_done(len(results))
+    for i, first in failed:
+        try:
+            results[i] = job(i)
+        except TtsError as e2:
+            raise TtsError(tts.FRIENDLY_BUSY, "tts_busy", f"Szene {i + 1}: {first.detail or first} / zweiter Anlauf: {e2.detail or e2}") from None
+        if on_done:
+            on_done(len(results))
+    return results
 
 
 def run(raw_cfg: object, out_dir: Path) -> dict:
@@ -109,15 +172,8 @@ def run(raw_cfg: object, out_dir: Path) -> dict:
                 video.scene_clip(frames, ln, sp, clip, wd)
                 return {"len": ln, "speech": sp, "wav": nw, "clip": clip, "poster": frames[-1]}
 
-            done: dict[int, dict] = {}
-            with ThreadPoolExecutor(max_workers=int(os.environ.get("EVGEN_WORKERS", "4"))) as pool:
-                futs = {pool.submit(job, i): i for i in range(n_sc)}
-                for n, f in enumerate(as_completed(futs), 1):
-                    if time.monotonic() > deadline:
-                        pool.shutdown(wait=False, cancel_futures=True)
-                        raise TimeoutError_("Gesamt-Zeitlimit beim Erzeugen der Szenen erreicht")
-                    done[futs[f]] = f.result()
-                    prog("scenes", 30 + int(58 * n / n_sc), f"Szene {n}/{n_sc} fertig (Sprache, Folien, Clip)")
+            done = run_scene_jobs(n_sc, job, int(os.environ.get("EVGEN_WORKERS", "4")), deadline,
+                                  lambda k: prog("scenes", 30 + int(58 * k / n_sc), f"Szene {k}/{n_sc} fertig (Sprache, Folien, Clip)"))
             timing["scenes_wall_s"] = round(time.monotonic() - t, 1)
 
             t = time.monotonic()

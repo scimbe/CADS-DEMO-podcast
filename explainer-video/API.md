@@ -29,7 +29,7 @@ Unbekannte Felder werden abgelehnt (Exit 2). Text wird als UTF-8 (NFC) gelesen; 
 ```
 PROGRESS {"stage":"script","pct":15,"message":"LLM-Skript, Versuch 1 (local-devstral-small2)"}
 RESULT   {"title":"...","duration_s":56.36,"elapsed_s":96.5,"warnings":[],"tts_backend":"channel","stub":false,"files":["video.mp4","subtitles.vtt","script.json","poster.jpg","meta.json"]}
-ERROR    {"code":"script_invalid","message":"..."}
+ERROR    {"code":"tts_busy","message":"Die Stimme ist gerade ausgelastet – bitte in einer Minute erneut versuchen.","details":"... (technisch)"}
 ```
 
 - `stage`: `config` (2) -> `script` (8-30) -> `scenes` (30-88, je Szene Sprache + Folien + Clip, parallel) -> `encode` (Schluss: Tonmaster, Lautheit, MP4) -> `done` (100). `pct` steigt monoton.
@@ -38,6 +38,10 @@ ERROR    {"code":"script_invalid","message":"..."}
 
 Fehlercodes (`ERROR.code`, Exit): `invalid_config` / `text_too_long` / `text_too_short` (2), `llm_not_configured` / `llm_unreachable` / `script_invalid` (3), `tts_not_configured` / `tts_failed` / `tts_lang_unavailable` (4), `tools_missing` / `font_missing` / `mix_failed` (5), `timeout` (6), `internal` (1).
 `script_invalid` heisst: auch nach Wiederholungen (2 Modelle x 3 Versuche) kein Skript, das die Belegpruefung besteht; Meldung nennt die Befunde.
+
+`message` ist immer ein freundlicher deutscher Satz für Besucher; Rohmeldungen von Werkzeugen stehen nur in `details` (Galerie: unter „Technische Details").
+
+TTS-Auslastung: der geteilte TTS-Node antwortet bei Last mit 503. Pro Lauf höchstens 2 gleichzeitige TTS-Aufrufe (`EVGEN_TTS_CONCURRENCY`; beim Backend `channel` Standard 1 plus 1 s Pause `EVGEN_TTS_PACE` nach jedem Clip, damit die Callcenter-Demo auf demselben Piper responsiv bleibt); Wiederholung mit Backoff und Jitter (0,5/1/2/4 s) innerhalb von 30 s je Szene (`EVGEN_TTS_SCENE_BUDGET`); eine gescheiterte Szene bekommt am Ende einen zweiten Anlauf, danach `tts_busy`.
 
 ## Ausgabedateien (in `out_dir`)
 
