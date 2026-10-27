@@ -10,6 +10,8 @@ import urllib.request
 
 from .errors import ScriptError
 
+FRIENDLY_LLM = "Das Sprachmodell ist gerade nicht erreichbar – bitte in einer Minute erneut versuchen."
+
 
 def _cfg() -> tuple[str, str, str]:
     base = os.environ.get("LLM_BASE_URL") or os.environ.get("LITELLM_BASE_URL") or ""
@@ -43,9 +45,9 @@ def chat(model: str, messages: list[dict], max_tokens: int, timeout: float) -> s
             d = json.load(r)
         return d["choices"][0]["message"]["content"] or ""
     except urllib.error.HTTPError as e:
-        raise ScriptError(f"LLM-Aufruf fehlgeschlagen ({model}): HTTP {e.code}", "llm_unreachable") from None
+        raise ScriptError(FRIENDLY_LLM, "llm_unreachable", f"{model}: HTTP {e.code}") from None
     except (urllib.error.URLError, TimeoutError, KeyError, ValueError, OSError) as e:
-        raise ScriptError(f"LLM-Aufruf fehlgeschlagen ({model}): {type(e).__name__}", "llm_unreachable") from None
+        raise ScriptError(FRIENDLY_LLM, "llm_unreachable", f"{model}: {type(e).__name__}") from None
 
 
 def extract_json(text: str) -> object:

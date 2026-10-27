@@ -24,6 +24,15 @@ from .errors import TtsError
 from .grounding import sentences
 
 CHUNK_CHARS = 600
+FRIENDLY_BUSY = "Die Stimme ist gerade ausgelastet – bitte in einer Minute erneut versuchen."
+FRIENDLY_FAIL = "Die Sprachausgabe hat gerade nicht geantwortet – bitte in einer Minute erneut versuchen."
+_BUSY = re.compile(r"503|busy|unavailable|timeout|timed out|too many|queue|stream-start|synthesis failed|exit 22", re.I)
+
+
+def classify(raw: str) -> TtsError:
+    """Rohfehler (Channel/HTTP/SSH) -> TtsError mit freundlicher Meldung; das Rohe nur in `detail`."""
+    busy = bool(_BUSY.search(raw or ""))
+    return TtsError(FRIENDLY_BUSY if busy else FRIENDLY_FAIL, "tts_busy" if busy else "tts_failed", (raw or "")[:300])
 
 
 def split_text(text: str, limit: int = CHUNK_CHARS) -> list[str]:
@@ -57,7 +66,16 @@ class StubTts:
     def available(self, lang: str) -> bool:
         return True
 
+    def __init__(self) -> None:
+        self.fail_first = int(os.environ.get("EVGEN_STUB_FAIL_FIRST", "0"))   # Test: die ersten N Aufrufe "503"
+        self.calls = 0
+        self.lock = threading.Lock()
+
     def synth(self, text: str, voice: str, timeout: float) -> bytes:
+        with self.lock:
+            self.calls += 1
+            if self.calls <= self.fail_first:
+                raise classify("ERROR: synthesis failed (voice=primary): ERROR stream-start HTTP Error 503")
         secs = max(0.8, len(text) / 15.0)
         rate = 22050
         f = 220 if voice == "A" else 330
@@ -91,7 +109,7 @@ class HttpTts:
         except TtsError:
             raise
         except Exception as e:
-            raise TtsError(f"TTS-HTTP fehlgeschlagen: {type(e).__name__}") from None
+            raise classify(f"HTTP {getattr(e, 'code', '')} {type(e).__name__}") from None
 
     def close(self) -> None:
         pass
@@ -113,9 +131,9 @@ class SshTts:
         try:
             r = subprocess.run(cmd, input=json.dumps({"text": text}).encode(), capture_output=True, timeout=timeout + 15)
         except subprocess.TimeoutExpired:
-            raise TtsError("TTS-Timeout (ssh)", "timeout") from None
+            raise classify("timeout (ssh)") from None
         if r.returncode != 0:
-            raise TtsError(f"TTS ssh/curl Exit {r.returncode}")
+            raise classify(f"ssh/curl exit {r.returncode}")
         return _check_wav(r.stdout)
 
     def close(self) -> None:
@@ -160,7 +178,7 @@ class ChannelTts:
                 line = self.q.get(timeout=max(0.1, end - time.monotonic()))
             except queue.Empty:
                 self.close()
-                raise TtsError("TTS-Timeout (channel)", "timeout") from None
+                raise classify("timeout (channel)") from None
             line = line.strip()
             if not line.startswith("{"):
                 continue
@@ -171,13 +189,13 @@ class ChannelTts:
             if env.get("ok") is True:
                 return str(env.get("output", ""))
             self.close()
-            raise TtsError("TTS-Channel-Fehler: " + str(env.get("error", ""))[:120])
+            raise classify("channel error: " + str(env.get("error", "")))
 
     def synth(self, text: str, voice: str, timeout: float) -> bytes:
         with self.lock:   # ein Channel-Prozess, ein Aufruf zugleich; Download danach parallel
             out = self._call({"text": text, "voice": "primary"}, timeout)
         if not re.fullmatch(r"https://[a-z0-9.-]*bunsenbrenner\.org/audio/[A-Za-z0-9_-]+\.wav", out):
-            raise TtsError("TTS-Channel lieferte keine Audio-URL: " + out[:80])
+            raise classify(out)
         last: Exception | None = None
         for _ in range(3):
             try:
@@ -186,7 +204,7 @@ class ChannelTts:
             except Exception as e:  # kurzzeitige Tunnel-Aussetzer
                 last = e
                 time.sleep(1.0)
-        raise TtsError(f"Audio-Abruf fehlgeschlagen: {type(last).__name__}")
+        raise classify(f"audio fetch failed: {type(last).__name__}")
 
     def close(self) -> None:
         if self.proc and self.proc.poll() is None:

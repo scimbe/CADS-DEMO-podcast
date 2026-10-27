@@ -22,7 +22,7 @@ def main(argv: list[str]) -> int:
         pipeline.run(raw, Path(argv[2] if len(argv) > 2 else "out"))
         return 0
     except EvgenError as e:
-        pipeline.emit("ERROR", {"code": e.code, "message": str(e)})
+        pipeline.emit("ERROR", {"code": e.code, "message": str(e), **({"details": e.detail[:400]} if e.detail else {})})
         return e.exit_code
     except Exception as e:  # nie Stacktrace/Geheimnisse an den Client
         print(f"internal error: {type(e).__name__}: {e}", file=sys.stderr)
