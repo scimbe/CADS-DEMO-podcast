@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 
 from .config import Config
@@ -37,12 +38,55 @@ def split_sentences(text: str, limit: int = 320) -> list[str]:
     return out
 
 
+_FOLD = str.maketrans({"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss"})
+
+
+def nfc(s: str) -> str:
+    return unicodedata.normalize("NFC", s)
+
+
 def norm(s: str) -> str:
-    return " ".join(_WORD.findall(s.lower()))
+    """Nur zum VERGLEICHEN: NFC, klein, Umlaute gefaltet (aeusserst/äußerst gleich). Angezeigter Text bleibt unveraendert."""
+    return " ".join(_WORD.findall(nfc(s).lower().translate(_FOLD)))
 
 
 def numbers(s: str) -> set[str]:
     return {m.rstrip(".,") for m in _NUM.findall(s) if m.rstrip(".,")}
+
+
+def shorten(s: str, limit: int = 70) -> str:
+    """Satz auf einen Stichpunkt kuerzen: Satzzeichen weg, an Komma/Wortgrenze schneiden."""
+    s = s.strip().rstrip(".!?;: ")
+    if len(s) <= limit:
+        return s
+    cut = s.rfind(", ", 0, limit)
+    if cut < 20:
+        cut = s.rfind(" ", 0, limit)
+    return s[:cut if cut > 0 else limit].rstrip(", ")
+
+
+def repair_bullets(bullets: object, cited: list[str]) -> list[str]:
+    """Gueltige Stichpunkte (2..4, je 3..70 Zeichen) herstellen: vorhandene bereinigen, fehlende aus den
+    ZITIERTEN Quellsätzen ableiten (damit bleiben sie belegt). Leere Liste, wenn das nicht gelingt."""
+    out: list[str] = []
+    for b in bullets if isinstance(bullets, list) else []:
+        if isinstance(b, str) and len(b.strip()) >= 3:
+            b = shorten(nfc(b))
+            if b and b not in out:
+                out.append(b)
+    def add(part: str) -> None:
+        b = shorten(part)
+        if len(b) >= 3 and b not in out and len(out) < 4:
+            out.append(b)
+
+    for sent in cited:                      # 1. ganze (gekürzte) Quellsätze
+        if len(out) < 2:
+            add(sent)
+    for sent in cited:                      # 2. sonst Teilsaetze
+        for part in re.split(r",\s+|\s+(?:und|sowie|and)\s+", sent):
+            if len(out) < 2 and len(part) >= 15:
+                add(part)
+    return out[:4] if len(out) >= 2 else []
 
 
 def word_count(s: str) -> int:
@@ -102,38 +146,42 @@ def validate(script: object, cfg: Config) -> tuple[dict, Report]:
             p.append(f"{tag}: kein Objekt"); continue
         nar, head, bl, src = sc.get("narration"), sc.get("headline"), sc.get("bullets"), sc.get("sources")
         if not isinstance(nar, str) or not 6 <= word_count(nar) <= 70:
-            p.append(f"{tag}: narration braucht 6..70 Woerter"); continue
+            p.append(f"{tag}: narration braucht 6..70 Wörter"); continue
         if not isinstance(head, str) or not 3 <= len(head.strip()) <= 60:
             p.append(f"{tag}: headline braucht 3..60 Zeichen"); continue
-        if not isinstance(bl, list) or not 2 <= len(bl) <= 4 or not all(isinstance(b, str) and 3 <= len(b.strip()) <= 70 for b in bl):
-            p.append(f"{tag}: bullets braucht 2..4 Punkte mit je 3..70 Zeichen"); continue
         if (not isinstance(src, list) or not 1 <= len(src) <= 3 or not all(isinstance(x, int) and not isinstance(x, bool) and 1 <= x <= len(sents) for x in src)):
             p.append(f"{tag}: sources braucht 1..3 Satznummern aus 1..{len(sents)}"); continue
         cited = [sents[x - 1] for x in dict.fromkeys(src)]
+        if not isinstance(bl, list) or not 2 <= len(bl) <= 4 or not all(isinstance(b, str) and 3 <= len(b.strip()) <= 70 for b in bl):
+            fixed = repair_bullets(bl, cited)
+            if not fixed:
+                p.append(f"{tag}: bullets braucht 2..4 Punkte mit je 3..70 Zeichen"); continue
+            bl = fixed
+            rep.warnings.append(f"Szene {i + 1}: Stichpunkte fehlten oder waren ungültig und wurden aus den Quellsätzen abgeleitet")
         total += word_count(nar)
         cited_text = " ".join(cited)
         extra = numbers(" ".join([nar, head, *bl])) - numbers(cited_text) - numbers(cfg.title)
         if extra:
-            p.append(f"{tag}: Zahlen nicht in den genannten Quellsaetzen: {', '.join(sorted(extra))}")
+            p.append(f"{tag}: Zahlen nicht in den genannten Quellsätzen: {', '.join(sorted(extra))}")
         cited_stems = stems(cited_text) | stems(cfg.title) | stems(head)
         long_w = [w for w in norm(" ".join([nar, *bl])).split() if len(w) >= 7]
         if long_w:
             ratio = sum(1 for w in long_w if w[:5] not in cited_stems) / len(long_w)
             rep.max_novel_ratio = max(rep.max_novel_ratio, round(ratio, 2))
             if ratio > NOVEL_WORD_MAX:
-                p.append(f"{tag}: {int(ratio * 100)}% der Inhaltswoerter stehen nicht in den Quellsaetzen {list(dict.fromkeys(src))} (erfunden?)")
+                p.append(f"{tag}: {int(ratio * 100)}% der Inhaltswörter stehen nicht in den Quellsätzen {list(dict.fromkeys(src))} (erfunden?)")
         rep.claims += len(cited)
         cl = cited
-        out.append({"narration": re.sub(r"\s+", " ", nar).strip(), "headline": head.strip(),
-                    "bullets": [b.strip() for b in bl], "claims": cl, "sources": list(dict.fromkeys(src))})
+        out.append({"narration": nfc(re.sub(r"\s+", " ", nar).strip()), "headline": nfc(head.strip()),
+                    "bullets": [nfc(b.strip()) for b in bl], "claims": cl, "sources": list(dict.fromkeys(src))})
     lo, hi, limited = bounds(cfg.length_s, cfg.text)
     rep.words, rep.scenes, rep.min_words, rep.max_words = total, len(scenes), lo, hi
     if total < lo:
-        p.append(f"Erzaehltext zu kurz: {total} Woerter, mindestens {lo}")
+        p.append(f"Erzähltext zu kurz: {total} Wörter, mindestens {lo}")
     if total > hi:
-        p.append(f"Erzaehltext zu lang: {total} Woerter, hoechstens {hi}")
+        p.append(f"Erzähltext zu lang: {total} Wörter, höchstens {hi}")
     if p:
         raise ScriptProblems(p)
     if limited:
-        rep.warnings.append("Video kuerzer als gewaehlt: der Text gibt fuer mehr Inhalt nicht genug her (keine Erfindungen)")
-    return {"title": title.strip(), "scenes": out}, rep
+        rep.warnings.append("Video kürzer als gewaehlt: der Text gibt für mehr Inhalt nicht genug her (keine Erfindungen)")
+    return {"title": nfc(title.strip()), "scenes": out}, rep

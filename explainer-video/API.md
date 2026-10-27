@@ -22,7 +22,7 @@ Die Galerie liest `.pdf`/`.txt`/`.md` selbst aus (z. B. `pdftotext`) und uebergi
 | `length` | 30 \| 60 \| 90 | nein (60) | Zielsekunden; tatsaechlich ca. 85-100 %, hartes Limit 120 s |
 | `lang` | "de" \| "en" | nein ("de") | siehe "Sprache" |
 
-Unbekannte Felder werden abgelehnt (Exit 2). Der Text ist Daten: Anweisungen darin werden nicht befolgt.
+Unbekannte Felder werden abgelehnt (Exit 2). Text wird als UTF-8 (NFC) gelesen; Umlaute und ß bleiben von Skript über Folien und Untertitel bis zur Sprachausgabe erhalten (Vergleiche im Belegcheck falten ä/ö/ü/ß nur intern). Der Text ist Daten: Anweisungen darin werden nicht befolgt.
 
 ## Ausgabe auf stdout (Fortschritt, eine Zeile je Ereignis)
 
@@ -32,7 +32,7 @@ RESULT   {"title":"...","duration_s":56.36,"elapsed_s":96.5,"warnings":[],"files
 ERROR    {"code":"script_invalid","message":"..."}
 ```
 
-- `stage`: `config` (2) -> `script` (8-30) -> `render` (45) -> `tts` (45-70) -> `encode` (70-88) -> `done` (100). `pct` steigt monoton.
+- `stage`: `config` (2) -> `script` (8-30) -> `scenes` (30-88, je Szene Sprache + Folien + Clip, parallel) -> `encode` (Schluss: Tonmaster, Lautheit, MP4) -> `done` (100). `pct` steigt monoton.
 - Genau eine Abschlusszeile: `RESULT` (Exit 0) oder `ERROR` (Exit ungleich 0). Zeilen auf stderr sind Diagnose, nie an Nutzer weiterreichen.
 - SSE-Abbildung: jede Zeile `PROGRESS {json}` -> `event: progress\ndata: {json}`, `RESULT` -> `event: done`, `ERROR` -> `event: error`.
 
@@ -52,7 +52,7 @@ Fehlercodes (`ERROR.code`, Exit): `invalid_config` / `text_too_long` / `text_too
 ## Grenzen und Zeitlimits
 
 Text 4000 Zeichen; Video max. 120 s (ueberlange Folgen verlieren Schlussszenen, `warnings`); 4-8 Szenen;
-Gesamtlimit `EVGEN_TOTAL_TIMEOUT` (240 s); LLM 150 s je Aufruf; TTS 60 s je Satzblock; ffmpeg 120-240 s je Schritt.
+Gesamtlimit `EVGEN_TOTAL_TIMEOUT` (240 s), Szenen-Worker `EVGEN_WORKERS` (4), x264-Preset `EVGEN_X264_PRESET` (veryfast); LLM 150 s je Aufruf; TTS 60 s je Satzblock; ffmpeg 120-240 s je Schritt.
 Empfehlung: hoechstens 1 laufender Auftrag je Sitzung und 2 gleichzeitig insgesamt (TTS-Node serialisiert, Piper-Queue max. 5).
 
 ## Grounding (keine erfundenen Fakten)

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -11,6 +12,7 @@ from .errors import MixError
 
 SR = 44100
 FPS = 25
+PRESET = os.environ.get("EVGEN_X264_PRESET", "veryfast")
 LEAD_S, TAIL_S = 0.35, 0.45
 FADE_S = 0.3
 TARGET_LUFS, TRUE_PEAK = -16.0, -1.5
@@ -55,7 +57,7 @@ def scene_len(speech_s: float) -> float:
 def scene_clip(frames: list[Path], scene_s: float, speech_s: float, dst: Path, wd: Path) -> None:
     """Video-only Clip: Ueberschrift sofort, Stichpunkte gleichmaessig waehrend der Sprache eingeblendet, Fade-in/out."""
     n = len(frames) - 1
-    marks = [0.0] + [LEAD_S + speech_s * (k + 0.5) / (n + 1) for k in range(n)] + [scene_s]
+    marks = [0.0] + [LEAD_S + 0.5 + 0.7 * speech_s * k / max(n, 1) for k in range(n)] + [scene_s]
     lst = wd / (dst.stem + ".txt")
     lines = []
     for k, f in enumerate(frames):
@@ -64,7 +66,7 @@ def scene_clip(frames: list[Path], scene_s: float, speech_s: float, dst: Path, w
     lst.write_text("\n".join(lines) + "\n", encoding="utf-8")
     run(["-f", "concat", "-safe", "0", "-i", str(lst), "-vf",
          f"fps={FPS},scale=1920:1080,format=yuv420p,fade=t=in:st=0:d={FADE_S},fade=t=out:st={scene_s - FADE_S:.3f}:d={FADE_S}",
-         "-t", f"{scene_s:.3f}", "-an", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24", "-tune", "stillimage", str(dst)], timeout=120)
+         "-t", f"{scene_s:.3f}", "-an", "-c:v", "libx264", "-preset", PRESET, "-crf", "24", "-tune", "stillimage", str(dst)], timeout=120)
 
 
 def concat(parts: list[Path], dst: Path, wd: Path, audio: bool) -> None:

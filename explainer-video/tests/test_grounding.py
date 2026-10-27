@@ -116,3 +116,79 @@ def test_vtt_timing_is_monotonic_and_inside_scene():
     out = video.vtt([{"narration": "Erster Satz. Zweiter Satz, etwas laenger.", "start": 0.0, "speech_s": 4.0},
                      {"narration": "Dritter Satz.", "start": 5.0, "speech_s": 2.0}])
     assert out.startswith("WEBVTT") and "00:00:00.350 -->" in out and "00:00:05.350 -->" in out
+
+
+UML = ("Die Größe des Tropfens bestimmt den Bogen. Auf der Rückseite wird das Licht reflektiert. Rotes Licht wird schwächer gebrochen. "
+       "Violettes Licht erscheint innen und wird stärker gebrochen. Der Beobachter steht mit dem Rücken zur Sonne.")
+UCFG = C.parse({"text": UML, "length": 30})
+
+
+def uscene(**kw):
+    s = {"headline": "Größe und Rückseite", "bullets": ["Größe des Tropfens", "Rückseite reflektiert, schwächer gebrochen"],
+         "narration": "Die Größe des Tropfens bestimmt den Bogen, auf der Rückseite wird das Licht reflektiert und rotes Licht schwächer gebrochen.",
+         "sources": [1, 2, 3]}
+    s.update(kw)
+    return s
+
+
+def test_umlauts_and_eszett_roundtrip_unchanged():
+    assert C.parse({"text": UML}).text == UML                      # Config laesst Text unveraendert
+    scr = {"title": "Größe, Rückseite, schwächer", "scenes": [uscene() for _ in range(4)]}
+    out, rep = G.validate(copy.deepcopy(scr), UCFG)
+    assert out["title"] == "Größe, Rückseite, schwächer"
+    assert out["scenes"][0]["headline"] == "Größe und Rückseite"
+    assert "schwächer" in out["scenes"][0]["narration"] and "Rückseite" in out["scenes"][0]["bullets"][1]
+    assert out["scenes"][0]["claims"][0].startswith("Die Größe des Tropfens")   # Quellsatz mit Umlauten
+
+
+def test_decomposed_umlauts_are_normalised_to_nfc():
+    import unicodedata
+    nfd = unicodedata.normalize("NFD", "Größe, Rückseite")
+    assert C.parse({"text": nfd + " " * 3 + "x" * 40}).text.startswith("Größe, Rückseite")
+
+
+def test_comparison_folds_umlauts_so_ascii_source_and_umlaut_script_match():
+    ascii_cfg = C.parse({"text": UML.replace("ö", "oe").replace("ü", "ue").replace("ä", "ae").replace("ß", "ss"), "length": 30})
+    out, _ = G.validate({"title": "Größe", "scenes": [uscene() for _ in range(4)]}, ascii_cfg)
+    assert out["scenes"][0]["headline"] == "Größe und Rückseite"        # Anzeige bleibt mit Umlauten
+
+
+def test_vtt_keeps_umlauts():
+    assert "Größe, Rückseite, schwächer" in video.vtt([{"narration": "Größe, Rückseite, schwächer.", "start": 0.0, "speech_s": 3.0}])
+
+
+def test_scene_without_bullets_is_repaired_from_cited_sources():
+    s = {"title": "Größe", "scenes": [uscene() for _ in range(4)]}
+    del s["scenes"][2]["bullets"]
+    s["scenes"][1]["bullets"] = ["nur einer"]
+    out, rep = G.validate(s, UCFG)
+    for sc in out["scenes"]:
+        assert 2 <= len(sc["bullets"]) <= 4 and all(3 <= len(b) <= 70 for b in sc["bullets"])
+    assert any("Szene 3" in w for w in rep.warnings) and any("Szene 2" in w for w in rep.warnings)
+
+
+def test_too_many_or_too_long_bullets_are_trimmed():
+    s = {"title": "Größe", "scenes": [uscene() for _ in range(4)]}
+    s["scenes"][0]["bullets"] = ["Größe des Tropfens"] * 3 + ["Rückseite reflektiert " * 8, "fünf", "sechs"]
+    out, _ = G.validate(s, UCFG)
+    assert 2 <= len(out["scenes"][0]["bullets"]) <= 4 and all(len(b) <= 70 for b in out["scenes"][0]["bullets"])
+
+
+def test_unrepairable_scene_is_rejected():
+    cfg = C.parse({"text": "Kurz. " + "x" * 50, "length": 30})
+    assert G.repair_bullets(None, ["Kurz."]) == []
+
+
+def test_every_frame_set_has_one_image_per_bullet_plus_title():
+    from evgen import render
+    import tempfile
+    if not (shutil_which("magick")):
+        pytest.skip("ImageMagick fehlt")
+    with tempfile.TemporaryDirectory() as d:
+        fr = render.render_scene(Path(d), 0, 4, "Titel", "Größe und Rückseite", ["Größe", "Rückseite", "schwächer"])
+        assert len(fr) == 4 and all(f.stat().st_size > 1000 for f in fr)
+
+
+def shutil_which(x):
+    import shutil
+    return shutil.which(x)

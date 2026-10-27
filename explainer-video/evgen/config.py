@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 
 from .errors import ConfigError
@@ -16,7 +17,7 @@ _CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
 def _clean(s: str) -> str:
-    return _CTRL.sub("", s).replace("\r\n", "\n").strip()
+    return unicodedata.normalize("NFC", _CTRL.sub("", s)).replace("\r\n", "\n").strip()
 
 
 @dataclass(frozen=True)

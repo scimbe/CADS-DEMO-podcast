@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -12,13 +13,13 @@ from pathlib import Path
 from . import config as C
 from . import grounding as G
 from . import render, script, tts, video
-from .errors import EvgenError, TimeoutError_
+from .errors import EvgenError, TimeoutError_, TtsError
 
 TOTAL_TIMEOUT = float(os.environ.get("EVGEN_TOTAL_TIMEOUT", "240"))
 TTS_CHUNK_TIMEOUT = float(os.environ.get("EVGEN_TTS_CHUNK_TIMEOUT", "60"))
 STUB_SCRIPT = {"title": "Selbsttest", "scenes": [
-    {"headline": f"Selbsttest Teil {i}", "bullets": ["Erster Punkt", "Zweiter Punkt", "Dritter Punkt"],
-     "narration": f"Dies ist Szene {i} des Selbsttests. Sie prueft Folien, Ton, Untertitel und den Zusammenbau des Videos.", "claims": []}
+    {"headline": f"Selbsttest Größe {i}", "bullets": ["Größe", "Rückseite", "schwächer"],
+     "narration": f"Dies ist Szene {i} des Selbsttests. Größe, Rückseite und schwächer werden korrekt gesprochen.", "claims": []}
     for i in range(1, 5)]}
 
 
@@ -37,11 +38,27 @@ def drop_to_limit(lengths: list[float], limit: float = C.MAX_VIDEO_SECONDS, keep
     return n
 
 
+# Der TTS-Node serialisiert die Inferenz und haelt nur 5 Anfragen in der Schlange (503 darueber): wenige parallel, mit Wiederholung.
+TTS_SLOTS = threading.Semaphore(int(os.environ.get("EVGEN_TTS_CONCURRENCY", "2")))
+
+
+def synth_retry(backend, chunk: str) -> bytes:
+    for attempt in range(3):
+        try:
+            with TTS_SLOTS:
+                return backend.synth(chunk, "A", TTS_CHUNK_TIMEOUT)
+        except TtsError as e:
+            if attempt == 2 or e.code in ("timeout", "tts_not_configured", "tts_lang_unavailable"):
+                raise
+            time.sleep(1.5 * (attempt + 1))
+    raise TtsError("unerreichbar")
+
+
 def synth_scene(backend, text: str, wd: Path, i: int) -> tuple[Path, float]:
     parts = []
     for k, chunk in enumerate(tts.split_text(text)):
         raw = wd / f"n{i}_{k}.wav"
-        raw.write_bytes(backend.synth(chunk, "A", TTS_CHUNK_TIMEOUT))
+        raw.write_bytes(synth_retry(backend, chunk))
         parts.append(raw)
     if len(parts) == 1:
         return parts[0], video.duration(parts[0])
@@ -57,7 +74,7 @@ def run(raw_cfg: object, out_dir: Path) -> dict:
     def prog(stage: str, pct: int, msg: str) -> None:
         emit("PROGRESS", {"stage": stage, "pct": pct, "message": msg})
 
-    prog("config", 2, "Eingabe pruefen")
+    prog("config", 2, "Eingabe prüfen")
     cfg = C.parse(raw_cfg)
     out_dir.mkdir(parents=True, exist_ok=True)
     stub = os.environ.get("EVGEN_TTS_BACKEND") == "stub" and os.environ.get("EVGEN_STUB_SCRIPT") == "1"
@@ -72,7 +89,7 @@ def run(raw_cfg: object, out_dir: Path) -> dict:
     timing["script_s"] = round(time.monotonic() - t, 1)
     scenes = scr["scenes"]
     title = cfg.title or scr["title"]
-    prog("script", 30, f"Skript fertig: {len(scenes)} Szenen, {rep.words} Woerter, {rep.claims} Belege")
+    prog("script", 30, f"Skript fertig: {len(scenes)} Szenen, {rep.words} Wörter, {rep.claims} Belege")
 
     backend = tts.make(cfg.lang)
     warnings = list(rep.warnings)
@@ -80,45 +97,48 @@ def run(raw_cfg: object, out_dir: Path) -> dict:
         with tempfile.TemporaryDirectory(prefix="evgen_") as td:
             wd = Path(td)
             t = time.monotonic()
-            pool = ThreadPoolExecutor(max_workers=3)
-            futs = {pool.submit(synth_scene, backend, s["narration"], wd, i): i for i, s in enumerate(scenes)}
-            frames = [render.render_scene(wd, i, len(scenes), title, s["headline"], s["bullets"]) for i, s in enumerate(scenes)]
-            timing["render_s"] = round(time.monotonic() - t, 1)
-            prog("render", 45, f"{len(scenes)} Folien gerendert (1920x1080)")
-            speech: dict[int, tuple[Path, float]] = {}
-            for n, f in enumerate(as_completed(futs), 1):
-                if time.monotonic() > deadline:
-                    pool.shutdown(wait=False, cancel_futures=True)
-                    raise TimeoutError_("Gesamt-Zeitlimit beim Sprechen erreicht")
-                speech[futs[f]] = f.result()
-                prog("tts", 45 + int(25 * n / len(scenes)), f"Szene {n}/{len(scenes)} vertont (Thomas)")
-            pool.shutdown()
-            timing["tts_wall_s"] = round(time.monotonic() - t, 1)  # inkl. paralleler Folien
+            n_sc = len(scenes)
+
+            def job(i: int) -> dict:
+                """Eine Szene komplett: Sprache (TTS) -> Folien -> Tonspur -> Clip. Szenen laufen parallel."""
+                wav, sp = synth_scene(backend, scenes[i]["narration"], wd, i)
+                frames = render.render_scene(wd, i, n_sc, title, scenes[i]["headline"], scenes[i]["bullets"])
+                ln = video.scene_len(sp)
+                nw, clip = wd / f"sn{i}.wav", wd / f"clip{i}.mp4"
+                video.narration_wav(wav, nw, ln)
+                video.scene_clip(frames, ln, sp, clip, wd)
+                return {"len": ln, "speech": sp, "wav": nw, "clip": clip, "poster": frames[-1]}
+
+            done: dict[int, dict] = {}
+            with ThreadPoolExecutor(max_workers=int(os.environ.get("EVGEN_WORKERS", "4"))) as pool:
+                futs = {pool.submit(job, i): i for i in range(n_sc)}
+                for n, f in enumerate(as_completed(futs), 1):
+                    if time.monotonic() > deadline:
+                        pool.shutdown(wait=False, cancel_futures=True)
+                        raise TimeoutError_("Gesamt-Zeitlimit beim Erzeugen der Szenen erreicht")
+                    done[futs[f]] = f.result()
+                    prog("scenes", 30 + int(58 * n / n_sc), f"Szene {n}/{n_sc} fertig (Sprache, Folien, Clip)")
+            timing["scenes_wall_s"] = round(time.monotonic() - t, 1)
 
             t = time.monotonic()
-            lens = [video.scene_len(speech[i][1]) for i in range(len(scenes))]
+            lens = [done[i]["len"] for i in range(n_sc)]
             keep = drop_to_limit(lens)
-            if keep < len(scenes):
-                warnings.append(f"Video auf das {C.MAX_VIDEO_SECONDS}-s-Limit gekuerzt ({len(scenes) - keep} Szenen entfallen)")
+            if keep < n_sc:
+                warnings.append(f"Video auf das {C.MAX_VIDEO_SECONDS}-s-Limit gekürzt ({n_sc - keep} Szenen entfallen)")
                 scenes, lens = scenes[:keep], lens[:keep]
-            clips, wavs, vtt_scenes, pos = [], [], [], 0.0
-            for i, s in enumerate(scenes):
-                nw = wd / f"sn{i}.wav"
-                video.narration_wav(speech[i][0], nw, lens[i])
-                wavs.append(nw)
-                clip = wd / f"clip{i}.mp4"
-                video.scene_clip(frames[i], lens[i], speech[i][1], clip, wd)
-                clips.append(clip)
-                vtt_scenes.append({"narration": s["narration"], "start": pos, "speech_s": speech[i][1]})
+            wavs = [done[i]["wav"] for i in range(keep)]
+            clips = [done[i]["clip"] for i in range(keep)]
+            vtt_scenes, pos = [], 0.0
+            for i, s_ in enumerate(scenes):
+                vtt_scenes.append({"narration": s_["narration"], "start": pos, "speech_s": done[i]["speech"]})
                 pos += lens[i]
-                prog("encode", 70 + int(18 * (i + 1) / len(scenes)), f"Szene {i + 1}/{len(scenes)} codiert")
             master, norm_a, silent = wd / "master.wav", wd / "norm.wav", wd / "silent.mp4"
             video.concat(wavs, master, wd, audio=True)
             pre = video.loudnorm(master, norm_a)
             video.concat(clips, silent, wd, audio=False)
             mp4 = out_dir / "video.mp4"
             video.mux(silent, norm_a, mp4)
-            video.poster(frames[0][-1], out_dir / "poster.jpg")
+            video.poster(done[0]["poster"], out_dir / "poster.jpg")
             (out_dir / "subtitles.vtt").write_text(video.vtt(vtt_scenes), encoding="utf-8")
             timing["encode_s"] = round(time.monotonic() - t, 1)
     finally:

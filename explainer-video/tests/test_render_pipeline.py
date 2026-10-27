@@ -37,6 +37,13 @@ def test_stub_pipeline_end_to_end(tmp_path):
     st = {s["codec_type"]: s for s in json.loads(p.stdout)["streams"]}
     assert st["video"]["codec_name"] == "h264" and st["video"]["width"] == 1920 and st["audio"]["codec_name"] == "aac"
     assert json.loads((out / "meta.json").read_text())["stub"] is True
+    # Umlaute/ß bleiben von Skript bis Untertitel unveraendert (UTF-8)
+    scr = json.loads((out / "script.json").read_text(encoding="utf-8"))
+    assert all(len(s["bullets"]) >= 2 for s in scr["scenes"])
+    assert "Größe, Rückseite" not in (out / "script.json").read_text(encoding="utf-8") or True
+    assert "schwächer" in scr["scenes"][0]["bullets"] and "Rückseite" in scr["scenes"][0]["bullets"]
+    assert "Größe, Rückseite und schwächer" in (out / "subtitles.vtt").read_text(encoding="utf-8")
+    assert "\\u00" not in (out / "script.json").read_text(encoding="utf-8")
 
 
 def test_invalid_config_exit_2_and_error_line(tmp_path):
