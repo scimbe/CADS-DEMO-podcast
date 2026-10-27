@@ -25,12 +25,18 @@ class ScriptProblems(Exception):
 _ABBR = ("z. B.", "z.B.", "d. h.", "d.h.", "u. a.", "u.a.", "bzw.", "ca.", "Nr.", "ggf.", "inkl.", "evtl.", "usw.", "etc.", "St.", "Dr.", "Prof.", "vs.")
 
 
-def _sentences(text: str) -> list[str]:
+_MONTHS = "(?:Januar|Februar|März|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember)"
+
+
+def sentences(text: str) -> list[str]:
     """Satzgrenzen nach . ! ? -- aber nicht nach Ordnungszahlen ("15. Februar") und gaengigen Abkuerzungen."""
     keep = text
     for ab in _ABBR:
         keep = keep.replace(ab, ab.replace(".", "\u2024").replace(" ", "\u00a0"))
-    keep = re.sub(r"(\d)\.(\s+)(?=[A-ZÄÖÜa-zäöüß])", lambda m: m.group(1) + "\u2024" + m.group(2), keep)
+    # Ordnungszahlen/Datum ("15. Februar", "3. Oktober", "1. Platz"): 1-2 Ziffern + Punkt + Wort; Jahreszahlen (3+ Ziffern) nur vor
+    # Kleinbuchstaben oder Monatsnamen ("2024. Danach" bleibt eine Satzgrenze)
+    keep = re.sub(r"(?<!\d)(\d{1,2})\.(\s+)(?=[A-Za-zÄÖÜäöüß])", lambda m: m.group(1) + "\u2024" + m.group(2), keep)
+    keep = re.sub(r"(\d{3,})\.(\s+)(?=[a-zäöüß]|" + _MONTHS + r")", lambda m: m.group(1) + "\u2024" + m.group(2), keep)
     parts = re.split(r"(?<=[.!?])\s+", keep.strip())
     return [x.replace("\u2024", ".").replace("\u00a0", " ") for x in parts if x.strip()]
 
@@ -39,7 +45,7 @@ def split_sentences(text: str, limit: int = 320) -> list[str]:
     """Eingabetext in nummerierbare Saetze zerlegen (Absaetze/Aufzaehlungen zaehlen als Grenze)."""
     out: list[str] = []
     for para in re.split(r"\n+", text):
-        for s in _sentences(para):
+        for s in sentences(para):
             s = s.strip(" -*\u2022\t")
             while len(s) > limit:
                 cut = max(s.rfind(", ", 0, limit), s.rfind(" ", 0, limit))
@@ -206,13 +212,42 @@ def sentence_ok(sentence: str, sources_text: str, extra_ok: str = "") -> bool:
     return not novel and not (numbers(sentence) - numbers(sources_text) - numbers(extra_ok))
 
 
+def merge_alternatives(kept: list[str], source: str) -> list[str]:
+    """Aufeinanderfolgende Saetze, die sich nur durch EINE Alternative unterscheiden ("... im Hafenbüro möglich." /
+    "... telefonisch möglich."), zu einem Satz mit "oder"/"und" verbinden -- nur wenn genau diese Verbindung
+    ("im Hafenbüro oder telefonisch") im Quelltext steht."""
+    src = norm(source)
+    out: list[str] = []
+    for sent in kept:
+        if out:
+            a, b = out[-1].rstrip(".!?").split(), sent.rstrip(".!?").split()
+            i = 0
+            while i < min(len(a), len(b)) and a[i] == b[i]:
+                i += 1
+            j = 0
+            while j < min(len(a), len(b)) - i and a[-1 - j] == b[-1 - j]:
+                j += 1
+            da, db = a[i:len(a) - j], b[i:len(b) - j]
+            if i + j >= 3 and 1 <= len(da) <= 3 and 1 <= len(db) <= 3 and da != db:
+                for conj in ("oder", "und"):
+                    if f"{norm(' '.join(da))} {conj} {norm(' '.join(db))}" in src:
+                        out[-1] = " ".join(a[:i] + da + [conj] + db + a[len(a) - j:]) + out[-1][len(out[-1].rstrip(".!?")):]
+                        break
+                else:
+                    out.append(sent)
+                continue
+        out.append(sent)
+    return out
+
+
 def ground_narration(nar: str, cited: list[str], title: str) -> tuple[str, list[dict], list[str]]:
     """Behaelt nur gedeckte Saetze. Bleibt zu wenig uebrig, wird die Quelle selbst (woertlich) gesprochen.
     Rueckgabe: (Erzaehltext, [{text, source}], entfernte Saetze)."""
     src = " ".join(cited)
     kept, removed = [], []
-    for sent in _sentences(nar):
+    for sent in sentences(nar):
         (kept if sentence_ok(sent, src, title) else removed).append(sent)
+    kept = merge_alternatives(kept, src)
     text = " ".join(kept)
     if word_count(text) < 6:
         text, kept = "", []

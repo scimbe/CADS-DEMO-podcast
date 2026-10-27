@@ -116,3 +116,56 @@ def test_invented_number_is_dropped():
 def test_evaluative_word_is_blocked_even_if_it_is_the_only_new_word():
     assert not G.sentence_ok("Boote werden in Bremen gekrant, gereinigt und in einer beheizten Halle optimal gelagert.", TEXT)
     assert G.sentence_ok("Boote werden sicher gelagert.", "Boote werden sicher gelagert.")   # steht so in der Quelle
+
+
+# ---- Ordnungszahlen/Datum zerschneiden weder Quelle, Untertitel noch Sprachblöcke -------------------------
+@pytest.mark.parametrize("text", [
+    "Die Anmeldung ist bis zum 15. Februar im Hafenbüro möglich.",
+    "Am 3. Oktober ist geschlossen.",
+    "Er belegte den 1. Platz im Wettbewerb.",
+    "Abgabe bis zum 1. März 2025 oder später.",
+])
+def test_ordinals_and_dates_are_not_split(text):
+    from evgen import tts, video
+    assert G.sentences(text) == [text]
+    assert video.split_cues(text) == [text]
+    assert tts.split_text(text) == [text]
+
+
+def test_real_sentence_end_after_a_year_still_splits():
+    assert G.sentences("Gegründet im Jahr 2024. Danach wuchs die Firma.") == ["Gegründet im Jahr 2024.", "Danach wuchs die Firma."]
+    assert G.sentences("Es gibt drei Optionen. Die erste ist günstig.") == ["Es gibt drei Optionen.", "Die erste ist günstig."]
+
+
+def test_subtitles_and_tts_keep_the_date_in_one_piece():
+    from evgen import tts, video
+    nar = "Die Anmeldung ist bis zum 15. Februar im Hafenbüro möglich. Der Preis beträgt 18 Euro."
+    cues = video.split_cues(nar)
+    assert cues == ["Die Anmeldung ist bis zum 15. Februar im Hafenbüro möglich.", "Der Preis beträgt 18 Euro."]
+    assert not any(c.endswith("15.") for c in cues)
+    assert tts.split_text(nar, limit=60)[0].endswith("möglich.")
+
+
+# ---- Alternativen zusammenführen (nur wenn die Verbindung im Quelltext steht) --------------------------
+def test_alternatives_are_merged_when_the_combination_is_in_the_source():
+    kept = ["Die Anmeldung ist bis zum 15. Februar im Hafenbüro möglich.", "Die Anmeldung ist bis zum 15. Februar telefonisch möglich."]
+    assert G.merge_alternatives(kept, TEXT) == ["Die Anmeldung ist bis zum 15. Februar im Hafenbüro oder telefonisch möglich."]
+
+
+def test_alternatives_are_not_merged_without_source_support():
+    kept = ["Die Anmeldung ist bis zum 15. Februar im Hafenbüro möglich.", "Die Anmeldung ist bis zum 15. Februar per Post möglich."]
+    assert G.merge_alternatives(kept, TEXT) == kept
+    other = ["Boote werden in Bremen gekrant.", "Boote werden in Bremen gereinigt."]
+    assert G.merge_alternatives(other, TEXT) == other           # "gekrant oder gereinigt" steht nicht im Quelltext
+
+
+def test_unrelated_sentences_are_untouched():
+    kept = ["Der Preis beträgt 18 Euro pro Meter Bootslänge und Monat.", "Boote werden in Bremen gekrant."]
+    assert G.merge_alternatives(kept, TEXT) == kept
+
+
+def test_merge_happens_inside_narration_grounding():
+    cited = ["Anmeldung bis zum 15. Februar im Hafenbüro oder telefonisch."]
+    nar = "Die Anmeldung ist bis zum 15. Februar im Hafenbüro möglich. Die Anmeldung ist bis zum 15. Februar telefonisch möglich."
+    text, mapping, removed = G.ground_narration(nar, cited, "")
+    assert text == "Die Anmeldung ist bis zum 15. Februar im Hafenbüro oder telefonisch möglich." and not removed and len(mapping) == 1

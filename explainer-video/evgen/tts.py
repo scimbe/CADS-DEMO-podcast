@@ -21,13 +21,14 @@ import wave
 from pathlib import Path
 
 from .errors import TtsError
+from .grounding import sentences
 
 CHUNK_CHARS = 600
 
 
 def split_text(text: str, limit: int = CHUNK_CHARS) -> list[str]:
     """Satzgrenzen-sicher in Stuecke <= limit zerlegen."""
-    sents = re.split(r"(?<=[.!?])\s+", text.strip())
+    sents = sentences(text)
     out, cur = [], ""
     for s in sents:
         while len(s) > limit:
