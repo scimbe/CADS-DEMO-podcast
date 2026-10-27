@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 
 from .errors import MixError
+from .grounding import sentences
 
 SR = 44100
 FPS = 25
@@ -120,7 +121,7 @@ def _ts(t: float) -> str:
 def split_cues(text: str, limit: int = 84) -> list[str]:
     """Satzweise Untertitel; lange Saetze an Kommas/Leerzeichen geteilt."""
     cues = []
-    for s in re.split(r"(?<=[.!?])\s+", text.strip()):
+    for s in sentences(text):
         while len(s) > limit:
             cut = max(s.rfind(", ", 0, limit), s.rfind(" ", 0, limit))
             cut = cut if cut > 20 else limit
