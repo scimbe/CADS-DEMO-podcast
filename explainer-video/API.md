@@ -28,7 +28,7 @@ Unbekannte Felder werden abgelehnt (Exit 2). Text wird als UTF-8 (NFC) gelesen; 
 
 ```
 PROGRESS {"stage":"script","pct":15,"message":"LLM-Skript, Versuch 1 (local-devstral-small2)"}
-RESULT   {"title":"...","duration_s":56.36,"elapsed_s":96.5,"warnings":[],"files":["video.mp4","subtitles.vtt","script.json","poster.jpg","meta.json"]}
+RESULT   {"title":"...","duration_s":56.36,"elapsed_s":96.5,"warnings":[],"tts_backend":"channel","stub":false,"files":["video.mp4","subtitles.vtt","script.json","poster.jpg","meta.json"]}
 ERROR    {"code":"script_invalid","message":"..."}
 ```
 

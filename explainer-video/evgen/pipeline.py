@@ -157,5 +157,6 @@ def run(raw_cfg: object, out_dir: Path) -> dict:
     (out_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     prog("done", 100, "Fertig")
     emit("RESULT", {"title": title, "duration_s": meta["duration_s"], "elapsed_s": elapsed, "warnings": warnings,
+                    "tts_backend": backend.name, "stub": meta["stub"],
                     "files": ["video.mp4", "subtitles.vtt", "script.json", "poster.jpg", "meta.json"]})
     return meta
