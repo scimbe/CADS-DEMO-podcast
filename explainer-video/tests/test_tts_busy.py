@@ -19,6 +19,7 @@ RAW = "ERROR: synthesis failed (voice=primary): ERROR stream-start HTTP Error 50
 
 @pytest.fixture(autouse=True)
 def fast(monkeypatch):
+    monkeypatch.setattr(pipeline, "TTS_PACE_S", 0.0)
     monkeypatch.setattr(pipeline, "BACKOFF_SCALE", 0.01)
 
 

@@ -41,7 +41,7 @@ Fehlercodes (`ERROR.code`, Exit): `invalid_config` / `text_too_long` / `text_too
 
 `message` ist immer ein freundlicher deutscher Satz für Besucher; Rohmeldungen von Werkzeugen stehen nur in `details` (Galerie: unter „Technische Details").
 
-TTS-Auslastung: der geteilte TTS-Node antwortet bei Last mit 503. Pro Lauf höchstens 2 gleichzeitige TTS-Aufrufe (`EVGEN_TTS_CONCURRENCY`); Wiederholung mit Backoff und Jitter (0,5/1/2/4 s) innerhalb von 30 s je Szene (`EVGEN_TTS_SCENE_BUDGET`); eine gescheiterte Szene bekommt am Ende einen zweiten Anlauf, danach `tts_busy`.
+TTS-Auslastung: der geteilte TTS-Node antwortet bei Last mit 503. Pro Lauf höchstens 2 gleichzeitige TTS-Aufrufe (`EVGEN_TTS_CONCURRENCY`; beim Backend `channel` Standard 1 plus 1 s Pause `EVGEN_TTS_PACE` nach jedem Clip, damit die Callcenter-Demo auf demselben Piper responsiv bleibt); Wiederholung mit Backoff und Jitter (0,5/1/2/4 s) innerhalb von 30 s je Szene (`EVGEN_TTS_SCENE_BUDGET`); eine gescheiterte Szene bekommt am Ende einen zweiten Anlauf, danach `tts_busy`.
 
 ## Ausgabedateien (in `out_dir`)
 

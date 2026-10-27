@@ -42,11 +42,30 @@ def drop_to_limit(lengths: list[float], limit: float = C.MAX_VIDEO_SECONDS, keep
 # Der TTS-Node (geteilt mit der Callcenter-Demo) serialisiert die Inferenz und antwortet bei Auslastung mit 503:
 # hoechstens EVGEN_TTS_CONCURRENCY (2) Aufrufe dieses Laufs gleichzeitig; bei Auslastung/Timeout Backoff mit Jitter
 # (0,5 / 1 / 2 / 4 s ...) innerhalb eines Zeitbudgets je Szene; scheitert eine Szene, bekommt sie am Ende einen zweiten Anlauf.
-TTS_SLOTS = threading.Semaphore(int(os.environ.get("EVGEN_TTS_CONCURRENCY", "2")))
+_CHANNEL = os.environ.get("EVGEN_TTS_BACKEND", "channel") == "channel"
+# Channel (geteilt mit dem Callcenter): 1 Aufruf zugleich + Pause (im Live-Test haelt das den Callcenter bei 9/10 in 5 s); sonst 2.
+TTS_SLOTS = threading.Semaphore(int(os.environ.get("EVGEN_TTS_CONCURRENCY", "1" if _CHANNEL else "2")))
 SCENE_BUDGET_S = float(os.environ.get("EVGEN_TTS_SCENE_BUDGET", "30"))
 BACKOFF_SCALE = float(os.environ.get("EVGEN_TTS_BACKOFF_SCALE", "1"))   # nur fuer Tests < 1
 BACKOFF_S = (0.5, 1.0, 2.0, 4.0)
 NO_RETRY = ("tts_not_configured", "tts_lang_unavailable")
+# Ruecksicht auf die geteilte Stimme: nach jedem fertigen Clip kurz pausieren, damit interaktive Nutzer (Callcenter)
+# in die Piper-Warteschlange kommen. 0 = aus.
+TTS_PACE_S = float(os.environ.get("EVGEN_TTS_PACE", "1.0" if _CHANNEL else "0"))
+_pace_lock = threading.Lock()
+_pace_last_end = [0.0]
+
+
+def _call_paced(backend, chunk: str) -> bytes:
+    if TTS_PACE_S > 0:
+        with _pace_lock:                      # ein Aufruf nach dem anderen bei der Pause, Anzahl Slots bleibt Obergrenze
+            wait = _pace_last_end[0] + TTS_PACE_S - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
+    try:
+        return backend.synth(chunk, "A", TTS_CHUNK_TIMEOUT)
+    finally:
+        _pace_last_end[0] = time.monotonic()
 
 
 def backoff_delay(attempt: int) -> float:
@@ -59,7 +78,7 @@ def synth_retry(backend, chunk: str, budget_end: float) -> bytes:
     while True:
         try:
             with TTS_SLOTS:
-                return backend.synth(chunk, "A", TTS_CHUNK_TIMEOUT)
+                return _call_paced(backend, chunk)
         except TtsError as e:
             delay = backoff_delay(attempt)
             if e.code in NO_RETRY or time.monotonic() + delay > budget_end:
