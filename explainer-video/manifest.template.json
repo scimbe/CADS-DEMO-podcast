@@ -1,0 +1,18 @@
+{
+  "name": "explainer-video",
+  "version": "0.1.0",
+  "installer_kind": "binary",
+  "bundle": { "url": "bundle.tar.gz", "sha256": "<beim Bauen eintragen>", "compose_file": "run.sh" },
+  "verify": { "script": "verify.sh", "timeout_secs": 120 },
+  "env_template": [
+    { "name": "LLM_BASE_URL", "required": true, "description": "OpenAI-kompatibler LiteLLM-Endpunkt (.../v1)" },
+    { "name": "LLM_API_KEY", "required": true, "description": "Schluessel fuer LLM_BASE_URL (alternativ LLM_API_KEY_FILE)" },
+    { "name": "LLM_MODEL", "required": true, "description": "z. B. local-devstral-small2" },
+    { "name": "EVGEN_LLM_FALLBACK_MODEL", "required": false, "description": "z. B. local-qwen36-35b-a3b-coding" },
+    { "name": "EVGEN_TTS_BACKEND", "required": false, "description": "channel (Standard) | http | ssh | stub" },
+    { "name": "CT_AGENT_BIN", "required": false, "description": "ct-agent (Backend channel)" },
+    { "name": "CT_RELAY_ENV", "required": false, "description": "Env-Datei mit CT_CHANNEL_GRANT_2E, CT_CHANNEL_HOLDER_KEY, CT_CHANNEL_NOISE_KEY, CT_CHANNEL_FRONT_DOOR_CERT" },
+    { "name": "CT_AUDIO_CHANNEL_ID", "required": false, "description": "ID des audio_generation-Channels (llm2)" }
+  ],
+  "_note": "Unsigniert. Signatur/manifest_id/issued_at/expires_at setzt das Signier-Werkzeug des Wrappers (bin/sign-templates.mjs bzw. Marketplace-Publisher); kein Schluessel liegt in diesem Repo."
+}
